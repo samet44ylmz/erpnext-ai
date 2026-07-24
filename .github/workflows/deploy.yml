@@ -1,0 +1,48 @@
+name: Deploy ERPNext AI
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+env:
+  NS: erpnext
+  SITE: erpnext.apps.ocp.local
+  BC: erpnext-tevkifat
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: OpenShift Login
+        env:
+          OC_SERVER: ${{ secrets.OC_SERVER }}
+          OC_TOKEN: ${{ secrets.OC_TOKEN }}
+        run: |
+          oc login "$OC_SERVER" --token="$OC_TOKEN" --insecure-skip-tls-verify=true >/dev/null
+          oc project "$NS"
+      - name: Build
+        run: oc start-build "$BC" -n "$NS" --wait
+      - name: Rollout Restart
+        run: |
+          oc rollout restart \
+            deploy/erpnext-gunicorn \
+            deploy/erpnext-worker-d \
+            deploy/erpnext-worker-l \
+            deploy/erpnext-worker-s \
+            deploy/erpnext-scheduler \
+            deploy/erpnext-nginx \
+            deploy/erpnext-socketio \
+            -n "$NS"
+      - name: Rollout Bekleniyor
+        run: oc rollout status deploy/erpnext-gunicorn -n "$NS" --timeout=300s
+      - name: Migrate
+        run: oc exec deploy/erpnext-gunicorn -n "$NS" -- bench --site "$SITE" migrate
+      - name: Install App (idempotent)
+        run: |
+          oc exec deploy/erpnext-gunicorn -n "$NS" -- bash -lc \
+            "bench --site $SITE list-apps | grep -qx erpnext_ai || bench --site $SITE install-app erpnext_ai"
+      - name: Build Assets
+        run: oc exec deploy/erpnext-gunicorn -n "$NS" -- bench build --app erpnext_ai
+      - name: Tamamlandi
+        run: echo ">>> ERPNext AI deploy tamamlandi."
