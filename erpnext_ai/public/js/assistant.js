@@ -1,9 +1,11 @@
 /**
  * ERPNext AI — arayuz
  *
- * Sag altta yuzen buton, tiklayinca sohbet paneli acilir.
+ * Sag altta yuzen buton; tiklayinca sohbet paneli acilir.
+ * Kullanicinin bulundugu ekrani (doctype) algilar ve backend'e iletir.
+ *
  * GUVENLIK: Form doldurma yalnizca TARAYICIDA yapilir.
- * Hicbir kayit kaydedilmez/submit edilmez.
+ * Hicbir kayit kaydedilmez veya submit edilmez.
  */
 
 (function () {
@@ -12,6 +14,28 @@
 	const PANEL_ID = "erpnext-ai-panel";
 	const BTN_ID = "erpnext-ai-btn";
 
+	// ----------------------------------------------------------
+	// Metin guvenligi ve basit bicimlendirme
+	// ----------------------------------------------------------
+	function kacisla(s) {
+		return String(s)
+			.replace(/&/g, "&amp;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;")
+			.replace(/"/g, "&quot;");
+	}
+
+	/** **kalin** ve satir sonlarini HTML'e cevirir (once kacisla). */
+	function bicimle(metin) {
+		let s = kacisla(metin);
+		s = s.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+		s = s.replace(/\n/g, "<br>");
+		return s;
+	}
+
+	// ----------------------------------------------------------
+	// Baglam: kullanici hangi ekranda?
+	// ----------------------------------------------------------
 	function mevcut_baglam() {
 		const ctx = {};
 		try {
@@ -25,11 +49,14 @@
 			}
 			ctx.route = (frappe.get_route() || []).join("/");
 		} catch (e) {
-			// baglam alinamadi
+			// baglam alinamadi, sorun degil
 		}
 		return ctx;
 	}
 
+	// ----------------------------------------------------------
+	// Form taslagi: formu ac ve doldur — KAYDETME
+	// ----------------------------------------------------------
 	function form_taslagi_ac(taslak) {
 		if (!taslak || !taslak.doctype) return;
 
@@ -45,13 +72,13 @@
 							dolan++;
 						}
 					} catch (e) {
-						// bu alan doldurulamadi
+						// bu alan doldurulamadi, digerlerine devam
 					}
 				});
 				frappe.show_alert(
 					{
 						message: __(
-							"Taslak dolduruldu ({0} alan). Gozden gecirip <b>kendiniz kaydedin</b> — asistan kaydetmez.",
+							"Taslak dolduruldu ({0} alan). Gozden gecirin ve kaydetmek icin <b>Save</b> tusuna basin.",
 							[dolan]
 						),
 						indicator: "orange",
@@ -62,35 +89,54 @@
 		});
 	}
 
+	// ----------------------------------------------------------
+	// Panel
+	// ----------------------------------------------------------
 	function panel_olustur() {
 		if (document.getElementById(PANEL_ID)) return;
 
 		const panel = document.createElement("div");
 		panel.id = PANEL_ID;
-		panel.innerHTML = `
-			<div class="eai-header">
-				<span class="eai-title">ERPNext AI</span>
-				<span class="eai-ctx" id="eai-ctx"></span>
-				<button class="eai-close" title="Kapat">&times;</button>
-			</div>
-			<div class="eai-log" id="eai-log">
-				<div class="eai-msg eai-bot">
-					Merhaba. Verilerinizle ilgili soru sorabilir veya
-					"fatura kes", "teklif hazirla" gibi taslak isteyebilirsiniz.
-					<div class="eai-note">Not: Hicbir kayit onayiniz olmadan kaydedilmez.</div>
-				</div>
-			</div>
-			<div class="eai-input-row">
-				<input id="eai-input" type="text" placeholder="Sorunuzu yazin..." autocomplete="off">
-				<button id="eai-send">Gonder</button>
-			</div>
-		`;
+
+		const header = document.createElement("div");
+		header.className = "eai-header";
+		header.innerHTML =
+			'<span class="eai-title">ERPNext AI</span>' +
+			'<span class="eai-ctx" id="eai-ctx"></span>' +
+			'<button class="eai-close" title="Kapat" aria-label="Kapat">&times;</button>';
+
+		const log = document.createElement("div");
+		log.className = "eai-log";
+		log.id = "eai-log";
+
+		const inputRow = document.createElement("div");
+		inputRow.className = "eai-input-row";
+		inputRow.innerHTML =
+			'<input id="eai-input" type="text" placeholder="Verilerinizle ilgili soru sorun" autocomplete="off">' +
+			'<button id="eai-send">Gonder</button>';
+
+		panel.appendChild(header);
+		panel.appendChild(log);
+		panel.appendChild(inputRow);
 		document.body.appendChild(panel);
 
-		panel.querySelector(".eai-close").onclick = panel_kapat;
-		panel.querySelector("#eai-send").onclick = gonder;
-		panel.querySelector("#eai-input").addEventListener("keydown", (e) => {
+		// karsilama
+		const hos = document.createElement("div");
+		hos.className = "eai-msg eai-bot";
+		hos.innerHTML =
+			"Verilerinizle ilgili soru sorabilirsiniz &mdash; ornegin " +
+			"<b>bu ayki toplam satis</b> ya da <b>kac odenmemis fatura var</b>." +
+			'<div class="eai-note">Fatura veya teklif taslagi da hazirlayabilirim. ' +
+			"Taslaklar ekranda acilir; kaydetmeyi siz yaparsiniz.</div>";
+		log.appendChild(hos);
+
+		header.querySelector(".eai-close").onclick = panel_kapat;
+		inputRow.querySelector("#eai-send").onclick = gonder;
+		inputRow.querySelector("#eai-input").addEventListener("keydown", (e) => {
 			if (e.key === "Enter") gonder();
+		});
+		document.addEventListener("keydown", (e) => {
+			if (e.key === "Escape") panel_kapat();
 		});
 	}
 
@@ -98,9 +144,11 @@
 		panel_olustur();
 		const p = document.getElementById(PANEL_ID);
 		p.classList.add("eai-open");
+
 		const ctx = mevcut_baglam();
 		const el = document.getElementById("eai-ctx");
-		if (el) el.textContent = ctx.doctype ? ctx.doctype : "";
+		if (el) el.textContent = ctx.doctype || "";
+
 		const inp = document.getElementById("eai-input");
 		if (inp) inp.focus();
 	}
@@ -110,16 +158,20 @@
 		if (p) p.classList.remove("eai-open");
 	}
 
-	function mesaj_ekle(metin, sinif) {
+	function mesaj_ekle(metin, sinif, html) {
 		const log = document.getElementById("eai-log");
 		const d = document.createElement("div");
 		d.className = "eai-msg " + sinif;
-		d.textContent = metin;
+		if (html) d.innerHTML = metin;
+		else d.textContent = metin;
 		log.appendChild(d);
 		log.scrollTop = log.scrollHeight;
 		return d;
 	}
 
+	// ----------------------------------------------------------
+	// Gonderme
+	// ----------------------------------------------------------
 	function gonder() {
 		const inp = document.getElementById("eai-input");
 		const soru = (inp.value || "").trim();
@@ -128,7 +180,7 @@
 		mesaj_ekle(soru, "eai-user");
 		inp.value = "";
 
-		const bekle = mesaj_ekle("Dusunuyorum...", "eai-bot eai-wait");
+		const bekle = mesaj_ekle("Veriler getiriliyor", "eai-bot eai-wait");
 		const btn = document.getElementById("eai-send");
 		btn.disabled = true;
 
@@ -142,28 +194,31 @@
 				btn.disabled = false;
 				bekle.remove();
 				const res = (r && r.message) || {};
-				mesaj_ekle(res.cevap || "(cevap alinamadi)", "eai-bot");
-
-				if (res.form_taslak) {
-					taslak_butonu_ekle(res.form_taslak);
-				}
+				mesaj_ekle(bicimle(res.cevap || "Cevap alinamadi."), "eai-bot", true);
+				if (res.form_taslak) taslak_karti_ekle(res.form_taslak);
 			},
 			error: function () {
 				btn.disabled = false;
 				bekle.remove();
-				mesaj_ekle("Bir hata olustu. Lutfen tekrar deneyin.", "eai-bot eai-err");
+				mesaj_ekle(
+					"Baglanti kurulamadi. Lutfen tekrar deneyin.",
+					"eai-bot eai-err"
+				);
 			},
 		});
 	}
 
-	function taslak_butonu_ekle(taslak) {
+	function taslak_karti_ekle(taslak) {
 		const log = document.getElementById("eai-log");
 		const box = document.createElement("div");
 		box.className = "eai-msg eai-bot eai-draft";
-		box.innerHTML = `
-			<div><b>${frappe.utils.escape_html(taslak.doctype)}</b> taslagi hazir.</div>
-			<div class="eai-note">Form acilip doldurulacak. <b>Kaydetmeyi siz yapacaksiniz.</b></div>
-		`;
+		box.innerHTML =
+			'<div class="eai-draft-head">' +
+			kacisla(taslak.doctype) +
+			" taslagi hazir</div>" +
+			'<div class="eai-note">Form acilip alanlar doldurulacak. ' +
+			"Kaydetme islemini siz yaparsiniz.</div>";
+
 		const b = document.createElement("button");
 		b.className = "eai-draft-btn";
 		b.textContent = "Taslagi ac";
@@ -176,11 +231,15 @@
 		log.scrollTop = log.scrollHeight;
 	}
 
+	// ----------------------------------------------------------
+	// Yuzen buton
+	// ----------------------------------------------------------
 	function buton_olustur() {
 		if (document.getElementById(BTN_ID)) return;
 		const b = document.createElement("button");
 		b.id = BTN_ID;
 		b.title = "ERPNext AI";
+		b.setAttribute("aria-label", "ERPNext AI asistanini ac");
 		b.textContent = "AI";
 		b.onclick = () => {
 			const p = document.getElementById(PANEL_ID);
