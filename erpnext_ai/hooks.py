@@ -6,5 +6,5 @@ app_email = "sametyilmaz4444@gmail.com"
 app_license = "MIT"
 
 # Desk arayuzunde her sayfada yuklenir
-app_include_js = "/assets/erpnext_ai/js/copilot.js"
-app_include_css = "/assets/erpnext_ai/css/copilot.css"
+app_include_js = "/assets/erpnext_ai/js/assistant.js"
+app_include_css = "/assets/erpnext_ai/css/assistant.css"
