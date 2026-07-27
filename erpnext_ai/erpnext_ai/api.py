@@ -271,13 +271,14 @@ def _tool_stok_analiz(args):
       - Son 1 aydaki (varsayilan 30 gun) satistan gunluk satis hizi hesaplanir.
       - Mevcut stok / gunluk hiz = kac gun yeter.
       - Hedef kapsama suresi kadar stok tutulmasi onerilir.
-      - Yavas/olu stokta siparis onerilmez (fazla stok bagi olusmasin).
+      - Satis yoksa ama stok esigin altindaysa yine uyarilir (esik yedegi).
+      - Az sayida faturaya dayanan tahminler "dusuk guven" olarak isaretlenir.
     SALT-OKUNUR: hicbir siparis olusturulmaz.
     """
     from math import ceil
 
-    gecmis_gun = int(args.get("gecmis_gun") or 30)      # kac gunluk satisa bakilsin
-    hedef_gun = int(args.get("hedef_gun") or 45)        # kac gunluk stok tutulsun
+    gecmis_gun = int(args.get("gecmis_gun") or 30)
+    hedef_gun = int(args.get("hedef_gun") or 45)
     depo = args.get("depo")
 
     baslangic = (date.today() - timedelta(days=gecmis_gun)).isoformat()
@@ -297,21 +298,25 @@ def _tool_stok_analiz(args):
 
     fatura_adlari = [f.get("name") for f in faturalar]
 
-    # 2) Urun bazinda toplam satilan miktar
+    # 2) Urun bazinda toplam miktar + kac ayri faturada gectigi
     satis_map = {}
+    fatura_sayi_map = {}
     if fatura_adlari:
         try:
             kalemler = frappe.get_all(
                 "Sales Invoice Item",
                 filters={"parent": ["in", fatura_adlari]},
-                fields=["item_code", "sum(qty) as toplam"],
-                group_by="item_code",
-                limit_page_length=0,
+                fields=["item_code", "qty", "parent"],
+                limit_page_length=5000,
             )
+            gecen = {}
             for k in kalemler:
-                satis_map[k.get("item_code")] = float(k.get("toplam") or 0)
+                kod = k.get("item_code")
+                satis_map[kod] = satis_map.get(kod, 0.0) + float(k.get("qty") or 0)
+                gecen.setdefault(kod, set()).add(k.get("parent"))
+            fatura_sayi_map = {k: len(v) for k, v in gecen.items()}
         except Exception:
-            satis_map = {}
+            satis_map, fatura_sayi_map = {}, {}
 
     # 3) Urunler + stok + esik
     try:
@@ -323,6 +328,11 @@ def _tool_stok_analiz(args):
         )
     except Exception as e:
         return f"Urun sorgusu hatasi: {str(e)[:200]}"
+
+    def yuvarla(x):
+        """Okunakli sayi: 20 ustu degerleri 10'un katina yuvarlar."""
+        n = int(ceil(x))
+        return int(ceil(n / 10.0) * 10) if n > 20 else n
 
     sonuc = []
     for u in urunler:
@@ -349,27 +359,49 @@ def _tool_stok_analiz(args):
         except Exception:
             reorder = []
         esik = reorder[0].get("warehouse_reorder_level") if reorder else None
+        esik_siparis = reorder[0].get("warehouse_reorder_qty") if reorder else None
 
         satilan = satis_map.get(kod, 0.0)
+        fatura_adedi = fatura_sayi_map.get(kod, 0)
         gunluk = satilan / gecmis_gun if gecmis_gun else 0.0
         aylik = round(gunluk * 30, 1)
+
+        esik_altinda = (esik is not None and stok < esik)
+
+        # tahmin guveni: az faturaya dayanan hiz yaniltici olabilir
+        if satilan <= 0:
+            guven = "veri_yok"
+        elif fatura_adedi < 3:
+            guven = "dusuk"
+        elif fatura_adedi < 6:
+            guven = "orta"
+        else:
+            guven = "iyi"
 
         # --- Karar mantigi ---
         if gunluk <= 0:
             kalan_gun = None
-            oneri = 0
-            if stok > 0:
+            if esik_altinda:
+                # satis verisi yok ama esik altinda -> klasik esik mantigi devrede
+                durum = "esik_alti_satis_yok"
+                oneri = int(esik_siparis or 0)
+                gerekce = (f"Son {gecmis_gun} gunde satis kaydi yok, ancak stok "
+                           f"({int(stok)}) siparis esiginin ({int(esik)}) altinda. "
+                           "Satis hizi hesaplanamadigi icin oneri sabit esik "
+                           "miktarina dayanir; karari gozden gecirin.")
+            elif stok > 0:
                 durum = "olu_stok"
+                oneri = 0
                 gerekce = (f"Son {gecmis_gun} gunde satis yok, elde {int(stok)} adet var. "
                            "Yeni siparis onerilmez.")
             else:
                 durum = "hareketsiz"
+                oneri = 0
                 gerekce = f"Son {gecmis_gun} gunde satis yok, stok da yok."
         else:
             kalan_gun = round(stok / gunluk, 1)
-            hedef_stok = gunluk * hedef_gun
-            ihtiyac = hedef_stok - stok
-            oneri = int(ceil(ihtiyac)) if ihtiyac > 0 else 0
+            ihtiyac = gunluk * hedef_gun - stok
+            oneri = yuvarla(ihtiyac) if ihtiyac > 0 else 0
 
             if kalan_gun < 7:
                 durum = "kritik"
@@ -377,7 +409,7 @@ def _tool_stok_analiz(args):
                            f"Yaklasik {kalan_gun} gun yeter.")
             elif kalan_gun < 15:
                 durum = "acil"
-                gerekce = (f"Ayda ~{aylik} adet satiyor, {kalan_gun} gunluk stok kaldi.")
+                gerekce = f"Ayda ~{aylik} adet satiyor, {kalan_gun} gunluk stok kaldi."
             elif oneri > 0:
                 durum = "siparis_zamani"
                 gerekce = (f"Ayda ~{aylik} adet satiyor, {kalan_gun} gunluk stok var. "
@@ -390,21 +422,32 @@ def _tool_stok_analiz(args):
                 durum = "normal"
                 gerekce = f"Ayda ~{aylik} adet satiyor, {kalan_gun} gunluk stok yeterli."
 
+            # guven dusukse uyari notu ve sabit esik miktariyla karsilastirma
+            if guven == "dusuk" and oneri > 0:
+                gerekce += (f" Not: bu tahmin yalnizca {fatura_adedi} faturaya dayaniyor, "
+                            "hiz yaniltici olabilir.")
+                if esik_siparis and oneri > esik_siparis * 3:
+                    gerekce += (f" Tanimli sabit siparis miktari {int(esik_siparis)} adet; "
+                                "aradaki fark buyuk, teyit edin.")
+
         sonuc.append({
             "urun": u.get("item_name") or kod,
             "kod": kod,
             "stok": int(stok),
             "esik": esik,
+            "esik_altinda": esik_altinda,
             "aylik_satis": aylik,
             "kalan_gun": kalan_gun,
             "durum": durum,
             "onerilen_siparis": oneri,
+            "sabit_siparis_miktari": esik_siparis,
+            "fatura_sayisi": fatura_adedi,
+            "guven": guven,
             "gerekce": gerekce,
         })
 
-    # aciliyet sirasina gore: once kritik olanlar
-    oncelik = {"kritik": 0, "acil": 1, "siparis_zamani": 2,
-               "normal": 3, "fazla_stok": 4, "olu_stok": 5, "hareketsiz": 6}
+    oncelik = {"kritik": 0, "acil": 1, "esik_alti_satis_yok": 2, "siparis_zamani": 3,
+               "normal": 4, "fazla_stok": 5, "olu_stok": 6, "hareketsiz": 7}
     sonuc.sort(key=lambda x: oncelik.get(x["durum"], 9))
 
     return json.dumps({
@@ -558,6 +601,10 @@ def _system_prompt(context=None):
         "Siparisi SEN VERMEZSIN, sadece onerirsin.\n"
         "- Satis gecmisi yoksa (aylik_satis 0 ise) bunu durustce belirt: "
         "'yeterli satis verisi yok, tahmin yapilamiyor' de, uydurma.\n"
+        "- 'guven' alani 'dusuk' ise oneriyi kesin bir emir gibi sunma; "
+        "tahminin az sayida faturaya dayandigini ve teyit gerektigini soyle. "
+        "'esik_alti_satis_yok' durumunda satis hizi hesaplanamadigini, "
+        "onerinin sabit esik miktarina dayandigini belirt.\n"
         "- Erisim reddedilirse kibarca bu veriye erisimin olmadigini soyle.\n"
         "\n"
         "IK (HCM) METIN URETIMI:\n"
@@ -705,12 +752,15 @@ def kritik_stok_kontrol():
     except Exception:
         urunler = []
 
-    # satis hizina gore aciliyet; satis verisi yoksa esige geri don
-    uyari_durumlari = {"kritik", "acil", "siparis_zamani"}
-    esik_alti = [u for u in urunler if u.get("durum") in uyari_durumlari]
+    # Uyari gerektirenler: satis hizina gore acil olanlar VEYA esik altindakiler
+    uyari_durumlari = {"kritik", "acil", "siparis_zamani", "esik_alti_satis_yok"}
+    esik_alti = [
+        u for u in urunler
+        if u.get("durum") in uyari_durumlari or u.get("esik_altinda")
+    ]
 
-    if not esik_alti:
-        # satis gecmisi yoksa klasik esik kontrolune don
+    if not esik_alti and not urunler:
+        # analiz hic calismadiysa klasik esik kontrolune don
         try:
             basit = json.loads(_tool_stok_durumu({}))
             if isinstance(basit, list):
@@ -735,6 +785,10 @@ def kritik_stok_kontrol():
             parca += f", onerilen siparis {u.get('onerilen_siparis')} adet"
         if u.get("tedarikci"):
             parca += f", tedarikci {u.get('tedarikci')}"
+        if u.get("guven") == "dusuk":
+            parca += " (tahmin az veriye dayaniyor, guven dusuk)"
+        elif u.get("guven") == "veri_yok":
+            parca += " (satis verisi yok)"
         ozet.append(parca)
     veri = "\n".join(ozet)
 
@@ -819,6 +873,9 @@ def kritik_stok_kontrol():
             "onerilen_siparis": u.get("onerilen_siparis"),
             "tedarikci": u.get("tedarikci"),
             "gerekce": u.get("gerekce"),
+            "guven": u.get("guven"),
+            "esik_altinda": u.get("esik_altinda"),
+            "fatura_sayisi": u.get("fatura_sayisi"),
         })
 
     return {
