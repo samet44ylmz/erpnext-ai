@@ -276,6 +276,7 @@
 		acil:            { etiket: "Acil",            sinif: "eai-d-acil" },
 		siparis_zamani:  { etiket: "Siparis zamani",  sinif: "eai-d-siparis" },
 		esik_altinda:    { etiket: "Esik altinda",    sinif: "eai-d-acil" },
+		esik_alti_satis_yok: { etiket: "Esik altinda", sinif: "eai-d-acil" },
 		fazla_stok:      { etiket: "Fazla stok",      sinif: "eai-d-normal" },
 		olu_stok:        { etiket: "Hareketsiz",      sinif: "eai-d-normal" },
 	};
@@ -314,6 +315,16 @@
 		});
 
 		html += "</div>";
+
+		if (u.guven === "dusuk" || u.guven === "veri_yok") {
+			const uyari =
+				u.guven === "veri_yok"
+					? "Satis verisi yok &mdash; oneri sabit esik miktarina dayaniyor"
+					: "Dusuk guven &mdash; tahmin " +
+					  (u.fatura_sayisi || 0) +
+					  " faturaya dayaniyor";
+			html += '<div class="eai-guven">' + uyari + "</div>";
+		}
 
 		if (u.gerekce) {
 			html += '<div class="eai-gerekce">' + kacisla(u.gerekce) + "</div>";
