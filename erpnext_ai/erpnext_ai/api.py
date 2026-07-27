@@ -45,6 +45,9 @@ ALLOWED_DOCTYPES = {
     "Stock Ledger Entry",
     "Bin",
     "Payment Entry",
+    # HCM: yalnizca pozisyon tanimlari — calisan/maas verisi DEGIL
+    "Job Opening",
+    "Designation",
 }
 
 BLOCKED_FIELDS = {
@@ -383,7 +386,26 @@ def _system_prompt(context=None):
         "Siparisi SEN VERMEZSIN, sadece onerirsin. Normal stoktakileri kisaca gec, "
         "eshik altindakilere odaklan.\n"
         "- Erisim reddedilirse kibarca bu veriye erisimin olmadigini soyle.\n"
-        "- Kisa, net ve Turkce cevap ver."
+        "\n"
+        "IK (HCM) METIN URETIMI:\n"
+        "- Kullanici IS TANIMI isterse (orn: 'satis muduru icin is tanimi yaz') "
+        "su basliklarla yapilandirilmis bir taslak yaz:\n"
+        "  **Pozisyon Ozeti** (2-3 cumle), **Temel Sorumluluklar** (5-7 madde), "
+        "**Aranan Nitelikler** (4-6 madde), **Tercih Sebebi** (2-3 madde).\n"
+        "- Kullanici SMART HEDEF isterse 3-5 hedef yaz. Her hedef olculebilir "
+        "bir sayi ve net bir sure icermeli (orn: 'ceyrek sonuna kadar musteri "
+        "memnuniyetini %85e cikarmak'). Her hedefin altina kisa bir olcum "
+        "kriteri ekle.\n"
+        "- Bu metinlerde detayli ol; kisalik kurali IK metinleri icin gecerli degil.\n"
+        "- Bu metinler TASLAKTIR. Sonunda kisaca 'Bu bir taslaktir, gozden "
+        "gecirip duzenleyebilirsiniz' de.\n"
+        "- Gercek calisan ismi, maas, kisisel bilgi ISTEME ve UYDURMA. "
+        "Yalnizca pozisyon adiyla calis. Maas/personel verisine erisimin yok.\n"
+        "- Kullanici bu metni sisteme kaydetmek isterse 'form_doldur' ile "
+        "'Job Opening' taslagi hazirla (job_title ve description alanlarini doldur). "
+        "Kaydetmeyi kullanici yapar.\n"
+        "\n"
+        "- Diger sorularda kisa, net ve Turkce cevap ver."
         + ctx
     )
 
