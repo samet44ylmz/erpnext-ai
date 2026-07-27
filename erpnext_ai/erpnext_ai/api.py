@@ -180,6 +180,85 @@ def _tool_form_doldur(args):
         "alanlar": alanlar,
     }, ensure_ascii=False, default=str)
 
+def _tool_stok_durumu(args):
+    """
+    Her urunun guncel stogunu, yeniden siparis esigini, siparis miktarini
+    ve varsayilan tedarikcisini birlestirip dondurur.
+    Eshik altinda olanlari isaretler. SALT-OKUNUR, siparis vermez.
+    """
+    depo = args.get("depo")  # opsiyonel; verilmezse tum depolar
+    try:
+        # 1) Urunlerin yeniden siparis ayarlarini cek (Item + Item Reorder)
+        urunler = frappe.get_list(
+            "Item",
+            filters={"disabled": 0, "is_stock_item": 1},
+            fields=["name", "item_name", "item_code"],
+            limit_page_length=100,
+        )
+    except frappe.PermissionError:
+        return "Urun verisine erisim yetkiniz yok."
+    except Exception as e:
+        return f"Sorgu hatasi: {str(e)[:200]}"
+
+    sonuc = []
+    for u in urunler:
+        kod = u.get("item_code") or u.get("name")
+
+        # guncel stok (Bin tablosundan)
+        bin_filtreler = {"item_code": kod}
+        if depo:
+            bin_filtreler["warehouse"] = depo
+        try:
+            binler = frappe.get_list(
+                "Bin", filters=bin_filtreler,
+                fields=["warehouse", "actual_qty"], limit_page_length=20,
+            )
+        except Exception:
+            binler = []
+        toplam_stok = sum((b.get("actual_qty") or 0) for b in binler)
+
+        # yeniden siparis esigi (Item Reorder cocuk tablosu)
+        try:
+            reorder = frappe.get_all(
+                "Item Reorder",
+                filters={"parent": kod},
+                fields=["warehouse_reorder_level", "warehouse_reorder_qty", "warehouse"],
+                limit_page_length=5,
+            )
+        except Exception:
+            reorder = []
+        esik = reorder[0]["warehouse_reorder_level"] if reorder else None
+        siparis_qty = reorder[0]["warehouse_reorder_qty"] if reorder else None
+
+        # varsayilan tedarikci
+        try:
+            ts = frappe.get_all(
+                "Item Default",
+                filters={"parent": kod},
+                fields=["default_supplier"],
+                limit_page_length=1,
+            )
+            tedarikci = ts[0]["default_supplier"] if ts and ts[0].get("default_supplier") else None
+        except Exception:
+            tedarikci = None
+
+        durum = "normal"
+        if esik is not None and toplam_stok < esik:
+            durum = "esik_altinda"
+
+        sonuc.append({
+            "urun": u.get("item_name") or kod,
+            "kod": kod,
+            "stok": toplam_stok,
+            "esik": esik,
+            "onerilen_siparis": siparis_qty,
+            "tedarikci": tedarikci,
+            "durum": durum,
+        })
+
+    return json.dumps(sonuc, ensure_ascii=False, default=str)
+
+
 
 TOOL_FNS = {
     "bugun": _tool_bugun,
@@ -188,6 +267,7 @@ TOOL_FNS = {
     "liste": _tool_liste,
     "alanlari_getir": _tool_alanlari_getir,
     "form_doldur": _tool_form_doldur,
+    "stok_durumu": _tool_stok_durumu,
 }
 
 TOOLS_SPEC = [
@@ -252,6 +332,18 @@ TOOLS_SPEC = [
             "alanlar": {"type": "object", "description": "orn: {'customer': 'Ahmet Yilmaz', 'grand_total': 5000}"},
         }, "required": ["doctype", "alanlar"]},
     }},
+    {"type": "function", "function": {
+        "name": "stok_durumu",
+        "description": (
+            "Tum stok urunlerinin guncel miktarini, yeniden siparis esigini, "
+            "onerilen siparis miktarini ve tedarikcisini dondurur. "
+            "'stok durumu', 'ne siparis etmeliyim', 'stogu azalan urunler' "
+            "gibi sorularda kullan. Eshik altindaki urunler 'durum: esik_altinda' olur."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "depo": {"type": "string", "description": "opsiyonel, orn: Magazalar - PT"},
+        }},
+    }},
 ]
 
 
@@ -286,6 +378,10 @@ def _system_prompt(context=None):
         "taslak kullaniciya gosterilir. Cevabinda kisaca 'taslagi hazirladim, "
         "gozden gecirip kaydedebilirsiniz' de. Teknik detay/JSON verme.\n"
         "- Liste sorularinda az alan iste (isim + gerekli olan), token limiti icin.\n"
+        "- Stok/siparis sorularinda 'stok_durumu' aracini kullan. Eshik altindaki "
+        "urunler icin onerilen siparis miktarini ve tedarikciyi belirt. "
+        "Siparisi SEN VERMEZSIN, sadece onerirsin. Normal stoktakileri kisaca gec, "
+        "eshik altindakilere odaklan.\n"
         "- Erisim reddedilirse kibarca bu veriye erisimin olmadigini soyle.\n"
         "- Kisa, net ve Turkce cevap ver."
         + ctx
@@ -396,6 +492,97 @@ def ask(question, context=None):
         "cevap": "Islem uzun surdu. Lutfen sorunuzu biraz daha sadelestirin.",
         "form_taslak": form_taslak,
         "adimlar": adimlar,
+    }
+
+
+@frappe.whitelist()
+def kritik_stok_kontrol():
+    """
+    Esik altindaki urunleri bulur, AI'dan oneri metni uretir.
+    Cana TEK kayit dusurur (ayni okunmamis uyari varsa tekrar eklemez).
+    Donus: {"var": bool, "mesaj": "...", "urun_sayisi": n}
+    """
+    # 1) Esik alti urunleri bul (stok_durumu mantigi)
+    ham = _tool_stok_durumu({})
+    try:
+        urunler = json.loads(ham)
+    except Exception:
+        return {"var": False, "mesaj": "", "urun_sayisi": 0}
+
+    if not isinstance(urunler, list):
+        return {"var": False, "mesaj": "", "urun_sayisi": 0}
+
+    esik_alti = [u for u in urunler if u.get("durum") == "esik_altinda"]
+    if not esik_alti:
+        return {"var": False, "mesaj": "", "urun_sayisi": 0}
+
+    # 2) AI'dan oneri metni uret
+    ozet = []
+    for u in esik_alti:
+        ozet.append(
+            f"{u.get('urun')}: stok {u.get('stok')}, esik {u.get('esik')}, "
+            f"onerilen siparis {u.get('onerilen_siparis')}, "
+            f"tedarikci {u.get('tedarikci') or 'belirsiz'}"
+        )
+    veri = "\n".join(ozet)
+
+    mesaj = None
+    try:
+        messages = [
+            {"role": "system", "content": (
+                "Sen bir stok asistanisin. Verilen esik alti urunler icin "
+                "kisa, net bir Turkce uyari metni yaz. Her urun icin: ne kadar "
+                "kaldi, ne kadar siparis onerilir, hangi tedarikciden. "
+                "2-3 cumleyi gecme. JSON veya teknik detay yazma, sadece "
+                "dogal uyari metni."
+            )},
+            {"role": "user", "content": f"Esik alti urunler:\n{veri}"},
+        ]
+        key = _groq_key()
+        if key:
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+            body = {"model": _groq_model(), "messages": messages, "temperature": 0.2}
+            r = requests.post(GROQ_URL, headers=headers, json=body, timeout=30)
+            data = r.json()
+            if "choices" in data:
+                mesaj = (data["choices"][0]["message"].get("content") or "").strip()
+    except Exception:
+        mesaj = None
+
+    if not mesaj:
+        # AI cevap vermezse basit metin
+        adlar = ", ".join(u.get("urun") for u in esik_alti)
+        mesaj = f"Su urunler yeniden siparis esiginin altinda: {adlar}. Siparis onerilir."
+
+    # 3) Cana TEK kayit dusur (ayni okunmamis uyari varsa ekleme)
+    try:
+        kullanici = frappe.session.user
+        mevcut = frappe.get_all(
+            "Notification Log",
+            filters={
+                "for_user": kullanici,
+                "subject": ["like", "%Stok Uyarisi%"],
+                "read": 0,
+            },
+            limit_page_length=1,
+        )
+        if not mevcut:
+            log = frappe.new_doc("Notification Log")
+            log.subject = "Stok Uyarisi: Yeniden siparis gerekli"
+            log.email_content = mesaj
+            log.for_user = kullanici
+            log.type = "Alert"
+            log.document_type = "Item"
+            log.insert(ignore_permissions=True)
+            frappe.db.commit()
+    except Exception:
+        # cana yazma basarisiz olsa bile pop-up calismali
+        pass
+
+    return {
+        "var": True,
+        "mesaj": mesaj,
+        "urun_sayisi": len(esik_alti),
     }
 
 
