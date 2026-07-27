@@ -531,10 +531,11 @@ def kritik_stok_kontrol():
         messages = [
             {"role": "system", "content": (
                 "Sen bir stok asistanisin. Verilen esik alti urunler icin "
-                "kisa, net bir Turkce uyari metni yaz. Her urun icin: ne kadar "
-                "kaldi, ne kadar siparis onerilir, hangi tedarikciden. "
-                "2-3 cumleyi gecme. JSON veya teknik detay yazma, sadece "
-                "dogal uyari metni."
+                "kisa, net bir Turkce uyari metni yaz. "
+                "MUTLAKA urun adini yazarak baslat (orn: 'Takim urununun stogu...'). "
+                "Her urun icin: kac adet kaldi, esik kac, kac adet siparis onerilir, "
+                "hangi tedarikciden. 2-3 cumleyi gecme. "
+                "JSON veya teknik detay yazma, sadece dogal uyari metni."
             )},
             {"role": "user", "content": f"Esik alti urunler:\n{veri}"},
         ]
@@ -549,26 +550,31 @@ def kritik_stok_kontrol():
     except Exception:
         mesaj = None
 
+    # urun adlari
+    urun_adlari = ", ".join(u.get("urun", "") for u in esik_alti)
+
     if not mesaj:
         # AI cevap vermezse basit metin
-        adlar = ", ".join(u.get("urun") for u in esik_alti)
-        mesaj = f"Su urunler yeniden siparis esiginin altinda: {adlar}. Siparis onerilir."
+        mesaj = (f"Su urunler yeniden siparis esiginin altinda: {urun_adlari}. "
+                 "Lutfen siparis veriniz.")
 
-    # 3) Cana TEK kayit dusur (ayni okunmamis uyari varsa ekleme)
+    # 3) Cana TEK kayit dusur — urun bazli benzersiz subject, tekrar ekleme
     try:
         kullanici = frappe.session.user
+        # benzersiz subject: hangi urunler etkilendigini goster
+        subject = f"Stok Uyarisi: {urun_adlari} — yeniden siparis gerekli"
         mevcut = frappe.get_all(
             "Notification Log",
             filters={
                 "for_user": kullanici,
-                "subject": ["like", "%Stok Uyarisi%"],
+                "subject": subject,
                 "read": 0,
             },
             limit_page_length=1,
         )
         if not mevcut:
             log = frappe.new_doc("Notification Log")
-            log.subject = "Stok Uyarisi: Yeniden siparis gerekli"
+            log.subject = subject
             log.email_content = mesaj
             log.for_user = kullanici
             log.type = "Alert"
