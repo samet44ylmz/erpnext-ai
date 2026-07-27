@@ -25,10 +25,13 @@
 			.replace(/"/g, "&quot;");
 	}
 
-	/** **kalin** ve satir sonlarini HTML'e cevirir (once kacisla). */
+	/** **kalin**, madde isaretleri ve satir sonlarini HTML'e cevirir. */
 	function bicimle(metin) {
 		let s = kacisla(metin);
+		// **kalin** -> <b>
 		s = s.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+		// satir basindaki "- " veya "* " -> madde isareti
+		s = s.replace(/^[ \t]*[-*][ \t]+/gm, "&bull;&nbsp;");
 		s = s.replace(/\n/g, "<br>");
 		return s;
 	}
@@ -124,10 +127,13 @@
 		const hos = document.createElement("div");
 		hos.className = "eai-msg eai-bot";
 		hos.innerHTML =
-			"Verilerinizle ilgili soru sorabilirsiniz &mdash; ornegin " +
-			"<b>bu ayki toplam satis</b> ya da <b>kac odenmemis fatura var</b>." +
-			'<div class="eai-note">Fatura veya teklif taslagi da hazirlayabilirim. ' +
-			"Taslaklar ekranda acilir; kaydetmeyi siz yaparsiniz.</div>";
+			"Sorabilecekleriniz:<br>" +
+			"&bull;&nbsp;<b>bu ayki toplam satis</b> &mdash; veri sorgulari<br>" +
+			"&bull;&nbsp;<b>ne siparis etmeliyim</b> &mdash; stok analizi<br>" +
+			"&bull;&nbsp;<b>satis muduru icin is tanimi yaz</b> &mdash; IK metinleri<br>" +
+			"&bull;&nbsp;<b>fatura kes</b> &mdash; form taslagi" +
+			'<div class="eai-note">Uretilen her sey taslaktir; ' +
+			"kaydetmeyi siz yaparsiniz.</div>";
 		log.appendChild(hos);
 
 		header.querySelector(".eai-close").onclick = panel_kapat;
