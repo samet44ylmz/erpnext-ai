@@ -264,36 +264,117 @@
 			method: "erpnext_ai.erpnext_ai.api.kritik_stok_kontrol",
 			callback: function (r) {
 				const res = (r && r.message) || {};
-				if (res.var && res.mesaj) {
-					popup_goster(res.mesaj, res.urun_sayisi);
-				}
+				if (res.var) popup_goster(res);
 			},
-			// sessiz: hata olsa da kullaniciyi rahatsiz etme
 			error: function () {},
 		});
 	}
 
-	function popup_goster(mesaj, sayi) {
+	// durum -> okunabilir etiket + renk sinifi
+	const DURUM_BILGI = {
+		kritik:          { etiket: "Kritik",          sinif: "eai-d-kritik" },
+		acil:            { etiket: "Acil",            sinif: "eai-d-acil" },
+		siparis_zamani:  { etiket: "Siparis zamani",  sinif: "eai-d-siparis" },
+		esik_altinda:    { etiket: "Esik altinda",    sinif: "eai-d-acil" },
+		fazla_stok:      { etiket: "Fazla stok",      sinif: "eai-d-normal" },
+		olu_stok:        { etiket: "Hareketsiz",      sinif: "eai-d-normal" },
+	};
+
+	function urun_karti(u) {
+		const bilgi = DURUM_BILGI[u.durum] || { etiket: u.durum || "", sinif: "eai-d-normal" };
+
+		// olcu satirlari
+		const olculer = [];
+		olculer.push({ etiket: "Mevcut stok", deger: (u.stok != null ? u.stok + " adet" : "-") });
+		if (u.aylik_satis) {
+			olculer.push({ etiket: "Aylik satis", deger: "~" + u.aylik_satis + " adet" });
+		}
+		if (u.kalan_gun != null) {
+			olculer.push({ etiket: "Yeterlilik", deger: u.kalan_gun + " gun", vurgu: u.kalan_gun < 15 });
+		}
+		if (u.esik != null) {
+			olculer.push({ etiket: "Siparis esigi", deger: u.esik + " adet" });
+		}
+
+		let html =
+			'<div class="eai-urun">' +
+			'<div class="eai-urun-ust">' +
+			'<span class="eai-urun-ad">' + kacisla(u.urun || "") + "</span>" +
+			'<span class="eai-rozet ' + bilgi.sinif + '">' + bilgi.etiket + "</span>" +
+			"</div>" +
+			'<div class="eai-olcu-satir">';
+
+		olculer.forEach(function (o) {
+			html +=
+				'<div class="eai-olcu">' +
+				'<div class="eai-olcu-etiket">' + o.etiket + "</div>" +
+				'<div class="eai-olcu-deger' + (o.vurgu ? " eai-vurgu" : "") + '">' +
+				kacisla(String(o.deger)) +
+				"</div></div>";
+		});
+
+		html += "</div>";
+
+		if (u.gerekce) {
+			html += '<div class="eai-gerekce">' + kacisla(u.gerekce) + "</div>";
+		}
+
+		if (u.onerilen_siparis) {
+			html +=
+				'<div class="eai-oneri">' +
+				'<span class="eai-oneri-etiket">Onerilen siparis</span>' +
+				'<span class="eai-oneri-deger">' + u.onerilen_siparis + " adet</span>" +
+				(u.tedarikci
+					? '<span class="eai-oneri-ted">' + kacisla(u.tedarikci) + "</span>"
+					: "") +
+				"</div>";
+		} else if (u.durum === "fazla_stok" || u.durum === "olu_stok") {
+			html +=
+				'<div class="eai-oneri eai-oneri-yok">' +
+				'<span class="eai-oneri-etiket">Siparis onerilmiyor</span>' +
+				"</div>";
+		}
+
+		html += "</div>";
+		return html;
+	}
+
+	function popup_goster(res) {
 		if (document.getElementById("eai-popup")) return;
+
+		const urunler = res.urunler || [];
+		const sayi = res.urun_sayisi || urunler.length;
 
 		const overlay = document.createElement("div");
 		overlay.id = "eai-popup-overlay";
 
 		const box = document.createElement("div");
 		box.id = "eai-popup";
+
+		let govde = "";
+		if (res.mesaj) {
+			govde += '<div class="eai-popup-ozet">' + bicimle(res.mesaj) + "</div>";
+		}
+		if (urunler.length) {
+			govde += '<div class="eai-popup-liste">';
+			urunler.forEach(function (u) {
+				govde += urun_karti(u);
+			});
+			govde += "</div>";
+		}
+
 		box.innerHTML =
 			'<div class="eai-popup-head">' +
+			'<div class="eai-popup-head-sol">' +
 			'<span class="eai-popup-badge">Stok Uyarisi</span>' +
-			"<span class='eai-popup-count'>" +
-			(sayi ? sayi + " urun" : "") +
-			"</span>" +
-			'<button class="eai-popup-close" title="Kapat">&times;</button>' +
+			'<span class="eai-popup-alt">Dikkat gerektiren ' + sayi + " urun</span>" +
 			"</div>" +
-			'<div class="eai-popup-body">' +
-			bicimle(mesaj) +
+			'<button class="eai-popup-close" title="Kapat" aria-label="Kapat">&times;</button>' +
 			"</div>" +
+			'<div class="eai-popup-body">' + govde + "</div>" +
 			'<div class="eai-popup-foot">' +
 			'<button class="eai-popup-btn-ghost" id="eai-popup-dismiss">Anladim</button>' +
+			'<button class="eai-popup-btn-ghost" id="eai-popup-stok">Stok raporu</button>' +
 			'<button class="eai-popup-btn" id="eai-popup-open">Asistani ac</button>' +
 			"</div>";
 
@@ -305,6 +386,14 @@
 		}
 		box.querySelector(".eai-popup-close").onclick = kapat;
 		box.querySelector("#eai-popup-dismiss").onclick = kapat;
+		box.querySelector("#eai-popup-stok").onclick = function () {
+			kapat();
+			try {
+				frappe.set_route("query-report", "Stock Balance");
+			} catch (e) {
+				window.location.href = "/app/query-report/Stock Balance";
+			}
+		};
 		box.querySelector("#eai-popup-open").onclick = function () {
 			kapat();
 			panel_ac();
@@ -312,6 +401,12 @@
 		overlay.onclick = function (e) {
 			if (e.target === overlay) kapat();
 		};
+		document.addEventListener("keydown", function esc(e) {
+			if (e.key === "Escape") {
+				kapat();
+				document.removeEventListener("keydown", esc);
+			}
+		});
 	}
 
 	function baslat() {
