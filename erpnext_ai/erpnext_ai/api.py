@@ -578,7 +578,16 @@ def kritik_stok_kontrol():
             log.email_content = mesaj
             log.for_user = kullanici
             log.type = "Alert"
-            log.document_type = "Item"
+            # tiklayinca Stok Bakiyesi raporuna gitsin
+            # (alan bu ERPNext surumunde varsa)
+            try:
+                meta = frappe.get_meta("Notification Log")
+                if meta.get_field("link"):
+                    log.link = "/app/query-report/Stock Balance"
+                else:
+                    log.document_type = "Item"
+            except Exception:
+                pass
             log.insert(ignore_permissions=True)
             frappe.db.commit()
     except Exception:
