@@ -19,7 +19,8 @@ jobs:
           OC_SERVER: ${{ secrets.OC_SERVER }}
           OC_TOKEN: ${{ secrets.OC_TOKEN }}
         run: |
-          oc login "$OC_SERVER" --token="$OC_TOKEN" --insecure-skip-tls-verify=true >/dev/null
+          CLEAN_TOKEN=$(echo -n "$OC_TOKEN" | tr -d '[:space:]')
+          oc login "$OC_SERVER" --token="$CLEAN_TOKEN" --insecure-skip-tls-verify=true >/dev/null
           oc project "$NS"
       - name: Build
         run: oc start-build "$BC" -n "$NS" --wait
