@@ -12,6 +12,7 @@ GUVENLIK:
 
 import json
 import os
+import time
 from datetime import date
 
 import frappe
@@ -54,8 +55,9 @@ BLOCKED_FIELDS = {
     "party_name", "title", "contact_info", "company_address",
 }
 
-MAX_ROWS = 50
+MAX_ROWS = 25          # tek listede en fazla satir (token korumasi)
 MAX_STEPS = 10
+MAX_TOOL_CHARS = 3500  # araç sonucundan modele gidecek en fazla karakter
 
 
 def _guard(doctype):
@@ -118,6 +120,8 @@ def _tool_liste(args):
     alanlar = [a for a in (args.get("alanlar") or ["name"]) if a not in BLOCKED_FIELDS]
     if not alanlar:
         alanlar = ["name"]
+    # token korumasi: en fazla 6 alan
+    alanlar = alanlar[:6]
     filtreler = args.get("filtreler") or {}
     limit = min(int(args.get("limit") or 10), MAX_ROWS)
     siralama = args.get("siralama")
@@ -130,7 +134,14 @@ def _tool_liste(args):
         return "Bu veriye erisim yetkiniz yok."
     except Exception as e:
         return f"Sorgu hatasi: {str(e)[:200]}"
-    return json.dumps(_strip_personal(rows), ensure_ascii=False, default=str)
+    rows = _strip_personal(rows)
+    out = json.dumps(rows, ensure_ascii=False, default=str)
+    # token korumasi: cok uzunsa kirp
+    if len(out) > MAX_TOOL_CHARS:
+        kirpik = rows[:10]
+        out = json.dumps(kirpik, ensure_ascii=False, default=str)
+        out += f"\n(Not: sonuc kirpildi, ilk 10 kayit gosteriliyor, toplam {len(rows)} kayit var.)"
+    return out
 
 
 def _tool_alanlari_getir(args):
@@ -146,14 +157,14 @@ def _tool_alanlari_getir(args):
     for df in meta.fields:
         if df.fieldtype in ("Section Break", "Column Break", "HTML", "Button"):
             continue
+        # sadece ise yarar alanlar; token korumasi icin ozet
         fields.append({
             "fieldname": df.fieldname,
             "label": df.label,
             "fieldtype": df.fieldtype,
-            "options": df.options,
             "reqd": df.reqd,
         })
-    return json.dumps(fields[:80], ensure_ascii=False, default=str)
+    return json.dumps(fields[:40], ensure_ascii=False, default=str)
 
 
 def _tool_form_doldur(args):
@@ -167,7 +178,6 @@ def _tool_form_doldur(args):
         "_action": "form_taslak",
         "doctype": dt,
         "alanlar": alanlar,
-        "not": "Taslak hazirlandi. Kaydetme islemi kullaniciya birakildi.",
     }, ensure_ascii=False, default=str)
 
 
@@ -210,13 +220,16 @@ TOOLS_SPEC = [
     }},
     {"type": "function", "function": {
         "name": "liste",
-        "description": "Kayitlari listeler. 'siralama' ile en cok/en yuksek sorulari cevaplanir.",
+        "description": (
+            "Kayitlari listeler. 'siralama' ile en cok/en yuksek sorulari cevaplanir. "
+            "Az sayida alan iste (orn: sadece isim ve miktar), fazla alan token limitini asar."
+        ),
         "parameters": {"type": "object", "properties": {
             "doctype": {"type": "string"},
             "alanlar": {"type": "array", "items": {"type": "string"}},
             "filtreler": {"type": "object"},
             "siralama": {"type": "string", "description": "orn: 'grand_total desc'"},
-            "limit": {"type": "integer"},
+            "limit": {"type": "integer", "description": "en fazla 25, varsayilan 10"},
         }, "required": ["doctype"]},
     }},
     {"type": "function", "function": {
@@ -229,12 +242,14 @@ TOOLS_SPEC = [
     {"type": "function", "function": {
         "name": "form_doldur",
         "description": (
-            "Yeni bir kayit icin FORM TASLAGI hazirlar (kaydetmez!). "
-            "Kullanici 'fatura kes', 'teklif hazirla' gibi bir istekte bulunursa kullan."
+            "Yeni kayit icin FORM TASLAGI hazirlar (kaydetmez!). "
+            "Kullanici 'fatura kes', 'teklif hazirla' derse kullan. "
+            "Kullanicinin verdigi TUM bilgileri (musteri, tutar, urun, miktar) "
+            "'alanlar' sozlugune MUTLAKA yerlestir. Bos birakma."
         ),
         "parameters": {"type": "object", "properties": {
             "doctype": {"type": "string", "description": "orn: Sales Invoice, Quotation"},
-            "alanlar": {"type": "object", "description": "orn: {'customer': 'Ahmet Yilmaz'}"},
+            "alanlar": {"type": "object", "description": "orn: {'customer': 'Ahmet Yilmaz', 'grand_total': 5000}"},
         }, "required": ["doctype", "alanlar"]},
     }},
 ]
@@ -264,8 +279,13 @@ def _system_prompt(context=None):
         "- Kesinlesmis belgeler icin filtrelere 'docstatus': 1 ekle.\n"
         "- Tutarlari Turk Lirasi formatinda sun (orn: 45.200,00 TL).\n"
         "- Veriyi ASLA uydurma; yalnizca arac sonuclarini kullan.\n"
-        "- Kullanici yeni kayit olusturmak isterse 'form_doldur' aracini kullan. "
-        "Kaydetme islemini SEN YAPMAZSIN; taslak kullaniciya gosterilir. Bunu belirt.\n"
+        "- ARAC CIKTISINI (JSON, ham veri, kod blogu) KULLANICIYA GOSTERME. "
+        "Sadece dogal, akici Turkce cumlelerle ozetle. Asla { } veya JSON yazma.\n"
+        "- Kullanici yeni kayit olusturmak isterse 'form_doldur' aracini kullan ve "
+        "verdigi bilgileri alanlara yerlestir. Kaydetme islemini SEN YAPMAZSIN; "
+        "taslak kullaniciya gosterilir. Cevabinda kisaca 'taslagi hazirladim, "
+        "gozden gecirip kaydedebilirsiniz' de. Teknik detay/JSON verme.\n"
+        "- Liste sorularinda az alan iste (isim + gerekli olan), token limiti icin.\n"
         "- Erisim reddedilirse kibarca bu veriye erisimin olmadigini soyle.\n"
         "- Kisa, net ve Turkce cevap ver."
         + ctx
@@ -273,6 +293,7 @@ def _system_prompt(context=None):
 
 
 def _groq_call(messages):
+    """Groq'a istek; 429/503'te bekleyip tekrar dener."""
     key = _groq_key()
     if not key:
         frappe.throw(_("Groq API anahtari tanimli degil (GROQ_AI_KEY)."))
@@ -283,8 +304,24 @@ def _groq_call(messages):
         "tools": TOOLS_SPEC,
         "temperature": 0.1,
     }
-    r = requests.post(GROQ_URL, headers=headers, json=body, timeout=90)
-    return r.json()
+    last = None
+    for attempt in range(4):
+        try:
+            r = requests.post(GROQ_URL, headers=headers, json=body, timeout=90)
+            data = r.json()
+        except Exception as e:
+            last = {"error": {"message": str(e)}}
+            time.sleep(2 * (attempt + 1))
+            continue
+        if "error" in data:
+            code = r.status_code
+            if code in (429, 503) and attempt < 3:
+                time.sleep(3 * (attempt + 1))
+                last = data
+                continue
+            return data
+        return data
+    return last or {"error": {"message": "Bilinmeyen hata"}}
 
 
 @frappe.whitelist()
@@ -307,11 +344,15 @@ def ask(question, context=None):
         data = _groq_call(messages)
 
         if "error" in data:
-            return {
-                "cevap": f"AI servisi hatasi: {str(data['error'])[:200]}",
-                "form_taslak": None,
-                "adimlar": adimlar,
-            }
+            err = data["error"]
+            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            # Kullaniciya sade mesaj
+            if "rate limit" in msg.lower() or "tpm" in msg.lower():
+                sade = ("Su an cok fazla veri islendi, kisa bir sure sonra tekrar deneyin. "
+                        "Daha dar bir soru (orn. belirli bir tarih araligi) daha hizli sonuc verir.")
+            else:
+                sade = "AI servisine su an ulasilamiyor. Lutfen birazdan tekrar deneyin."
+            return {"cevap": sade, "form_taslak": None, "adimlar": adimlar}
 
         msg = data["choices"][0]["message"]
         calls = msg.get("tool_calls")
@@ -348,11 +389,11 @@ def ask(question, context=None):
                 "role": "tool",
                 "tool_call_id": call["id"],
                 "name": name,
-                "content": result[:6000],
+                "content": result[:MAX_TOOL_CHARS],
             })
 
     return {
-        "cevap": "Islem adim sinirina ulasti. Lutfen sorunuzu sadelestirin.",
+        "cevap": "Islem uzun surdu. Lutfen sorunuzu biraz daha sadelestirin.",
         "form_taslak": form_taslak,
         "adimlar": adimlar,
     }
