@@ -552,3 +552,16 @@
 @media (prefers-reduced-motion: reduce) {
   #eai-popup-overlay, #eai-popup { animation: none; }
 }
+
+/* guven uyarisi */
+.eai-guven {
+  display: inline-block;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #96651A;
+  background: #FDF3E3;
+  border: 1px solid #EDD6A8;
+  padding: 5px 10px;
+  border-radius: 7px;
+  margin-bottom: 10px;
+}
