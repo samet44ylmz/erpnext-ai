@@ -306,3 +306,114 @@
   .eai-msg { animation: none; }
   #erpnext-ai-btn, .eai-draft-btn, #eai-send { transition: none; }
 }
+
+/* ============================================================
+   Kritik stok pop-up
+   ============================================================ */
+#eai-popup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 25, 41, .35);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1050;
+  animation: eai-fade .2s ease;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@keyframes eai-fade { from { opacity: 0; } to { opacity: 1; } }
+
+#eai-popup {
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(15, 25, 41, .3);
+  overflow: hidden;
+  animation: eai-pop-in .28s cubic-bezier(.2,.9,.3,1.15);
+}
+@keyframes eai-pop-in {
+  from { opacity: 0; transform: translateY(16px) scale(.95); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.eai-popup-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 15px 18px;
+  background: linear-gradient(135deg, #E8A33D 0%, #D98A22 100%);
+  color: #fff;
+}
+.eai-popup-badge {
+  font-weight: 650;
+  font-size: 14px;
+  letter-spacing: .01em;
+}
+.eai-popup-count {
+  font-size: 11px;
+  font-weight: 500;
+  background: rgba(255,255,255,.22);
+  padding: 3px 9px;
+  border-radius: 20px;
+}
+.eai-popup-close {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  color: rgba(255,255,255,.85);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.eai-popup-close:hover { color: #fff; }
+
+.eai-popup-body {
+  padding: 18px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: #2C3444;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.eai-popup-body b { color: #16233A; font-weight: 650; }
+
+.eai-popup-foot {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 12px 18px;
+  border-top: 1px solid #EDEFF3;
+  background: #FAFBFC;
+}
+.eai-popup-btn {
+  padding: 9px 18px;
+  border: 0;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #1E3355 0%, #16233A 100%);
+  color: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: opacity .15s ease;
+}
+.eai-popup-btn:hover { opacity: .9; }
+.eai-popup-btn-ghost {
+  padding: 9px 16px;
+  border: 1.5px solid #D3D8E0;
+  border-radius: 9px;
+  background: #fff;
+  color: #556070;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .15s ease;
+}
+.eai-popup-btn-ghost:hover { background: #F2F4F7; }
+
+@media (prefers-reduced-motion: reduce) {
+  #eai-popup-overlay, #eai-popup { animation: none; }
+}
