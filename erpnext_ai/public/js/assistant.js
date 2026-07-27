@@ -249,9 +249,70 @@
 		document.body.appendChild(b);
 	}
 
+	// ----------------------------------------------------------
+	// Kritik stok pop-up'i (her giriste kontrol)
+	// ----------------------------------------------------------
+	function kritik_stok_kontrol() {
+		if (!window.frappe || !frappe.call) return;
+		frappe.call({
+			method: "erpnext_ai.erpnext_ai.api.kritik_stok_kontrol",
+			callback: function (r) {
+				const res = (r && r.message) || {};
+				if (res.var && res.mesaj) {
+					popup_goster(res.mesaj, res.urun_sayisi);
+				}
+			},
+			// sessiz: hata olsa da kullaniciyi rahatsiz etme
+			error: function () {},
+		});
+	}
+
+	function popup_goster(mesaj, sayi) {
+		if (document.getElementById("eai-popup")) return;
+
+		const overlay = document.createElement("div");
+		overlay.id = "eai-popup-overlay";
+
+		const box = document.createElement("div");
+		box.id = "eai-popup";
+		box.innerHTML =
+			'<div class="eai-popup-head">' +
+			'<span class="eai-popup-badge">Stok Uyarisi</span>' +
+			"<span class='eai-popup-count'>" +
+			(sayi ? sayi + " urun" : "") +
+			"</span>" +
+			'<button class="eai-popup-close" title="Kapat">&times;</button>' +
+			"</div>" +
+			'<div class="eai-popup-body">' +
+			bicimle(mesaj) +
+			"</div>" +
+			'<div class="eai-popup-foot">' +
+			'<button class="eai-popup-btn-ghost" id="eai-popup-dismiss">Anladim</button>' +
+			'<button class="eai-popup-btn" id="eai-popup-open">Asistani ac</button>' +
+			"</div>";
+
+		overlay.appendChild(box);
+		document.body.appendChild(overlay);
+
+		function kapat() {
+			overlay.remove();
+		}
+		box.querySelector(".eai-popup-close").onclick = kapat;
+		box.querySelector("#eai-popup-dismiss").onclick = kapat;
+		box.querySelector("#eai-popup-open").onclick = function () {
+			kapat();
+			panel_ac();
+		};
+		overlay.onclick = function (e) {
+			if (e.target === overlay) kapat();
+		};
+	}
+
 	function baslat() {
 		if (!window.frappe || !frappe.call) return;
 		buton_olustur();
+		// her giriste kritik stok kontrolu -> pop-up
+		setTimeout(kritik_stok_kontrol, 2500);
 	}
 
 	if (document.readyState === "loading") {
