@@ -779,8 +779,6 @@ def kritik_stok_kontrol():
             parca += f", ayda ~{u.get('aylik_satis')} satiyor"
         if u.get("kalan_gun") is not None:
             parca += f", {u.get('kalan_gun')} gunluk stok kaldi"
-        if u.get("esik") is not None:
-            parca += f", esik {u.get('esik')}"
         if u.get("onerilen_siparis"):
             parca += f", onerilen siparis {u.get('onerilen_siparis')} adet"
         if u.get("tedarikci"):
@@ -796,12 +794,12 @@ def kritik_stok_kontrol():
     try:
         messages = [
             {"role": "system", "content": (
-                "Sen bir stok asistanisin. Verilen esik alti urunler icin "
+                "Sen bir stok asistanisin. Verilen urunler icin "
                 "kisa, net bir Turkce uyari metni yaz. "
                 "MUTLAKA urun adini yazarak baslat (orn: 'Takim urununun stogu...'). "
-                "Her urun icin: kac adet kaldi, esik kac, kac adet siparis onerilir, "
-                "hangi tedarikciden. 2-3 cumleyi gecme. "
-                "JSON veya teknik detay yazma, sadece dogal uyari metni."
+                "Her urun icin: kac adet kaldi, ayda ne kadar satiyor, kac gun yeter, "
+                "kac adet siparis onerilir, hangi tedarikciden. 'Esik' kelimesini KULLANMA. "
+                "2-3 cumleyi gecme. JSON veya teknik detay yazma, sadece dogal uyari metni."
             )},
             {"role": "user", "content": f"Esik alti urunler:\n{veri}"},
         ]
