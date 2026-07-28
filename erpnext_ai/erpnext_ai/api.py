@@ -570,24 +570,41 @@ def _normalize_tr(s):
 
 def _musteri_coz(girilen_ad):
     """
-    Kullanicinin yazdigi musteri adini, Turkce karakter farkina bakmaksizin
-    sistemdeki gercek Customer kaydiyla eslestirir. Bulamazsa girileni aynen dondurur.
+    Kullanicinin yazdigi adi, Turkce karakter farkina bakmaksizin once Customer
+    (kayitli musteri) icinde, bulamazsa Lead (potansiyel musteri/aday) icinde arar.
+    Donus: {"tur": "Customer"|"Lead"|None, "kayit": gercek_kayit_adi}
+    Hicbiri bulunamazsa {"tur": None, "kayit": girilen_ad} doner.
     """
     if not girilen_ad:
-        return girilen_ad
+        return {"tur": None, "kayit": girilen_ad}
+    hedef = _normalize_tr(girilen_ad)
+
+    # 1) Once Customer'da ara (isim = kayit adi)
     try:
         musteriler = frappe.get_all("Customer", fields=["name"], limit_page_length=0)
+        for m in musteriler:
+            if _normalize_tr(m["name"]) == hedef:
+                return {"tur": "Customer", "kayit": m["name"]}
+        for m in musteriler:
+            if hedef in _normalize_tr(m["name"]) or _normalize_tr(m["name"]) in hedef:
+                return {"tur": "Customer", "kayit": m["name"]}
     except Exception:
-        return girilen_ad
-    hedef = _normalize_tr(girilen_ad)
-    for m in musteriler:
-        if _normalize_tr(m["name"]) == hedef:
-            return m["name"]
-    # tam eslesme yoksa kismi eslesme dene
-    for m in musteriler:
-        if hedef in _normalize_tr(m["name"]) or _normalize_tr(m["name"]) in hedef:
-            return m["name"]
-    return girilen_ad
+        pass
+
+    # 2) Customer'da yoksa Lead'de ara (isim ayri bir alanda: lead_name)
+    try:
+        adaylar = frappe.get_all("Lead", fields=["name", "lead_name"], limit_page_length=0)
+        for a in adaylar:
+            if _normalize_tr(a.get("lead_name") or "") == hedef:
+                return {"tur": "Lead", "kayit": a["name"]}
+        for a in adaylar:
+            ad = _normalize_tr(a.get("lead_name") or "")
+            if ad and (hedef in ad or ad in hedef):
+                return {"tur": "Lead", "kayit": a["name"]}
+    except Exception:
+        pass
+
+    return {"tur": None, "kayit": girilen_ad}
 
 
 def _urun_coz(girilen):
@@ -617,19 +634,37 @@ def _urun_coz(girilen):
 
 def _tool_fiyat_onerisi(args):
     """
-    Musteri + urun icin fiyat onerisi hazirlar.
-      - Musterinin bu urunden gecmis alimi VARSA: son alim fiyatini,
-        enflasyon (TUFE) ve dolar kuru degisimiyle guncelleyip onerir.
-        Hangisi daha yuksekse o oran uygulanir (maliyet riskini azaltmak icin).
-      - Gecmisi YOKSA: standart satis fiyati onerilir.
+    Musteri (VEYA potansiyel musteri/Lead) + urun icin fiyat onerisi hazirlar.
+      - Kayitli MUSTERI ve gecmis alimi VARSA: son alim fiyatini, enflasyon
+        (TUFE) ve dolar kuru degisimiyle guncelleyip onerir. Hangisi daha
+        yuksekse o oran uygulanir (maliyet riskini azaltmak icin).
+      - Musteri gecmisi YOKSA veya LEAD (potansiyel musteri) ise: standart
+        satis fiyati onerilir (Lead'in tanim geregi gecmis siparisi olamaz).
     SALT-OKUNUR: hicbir kayit olusturmaz/degistirmez.
     """
-    musteri = args.get("musteri")
+    musteri_girilen = args.get("musteri")
     urun = args.get("urun")
-    if not musteri or not urun:
+    if not musteri_girilen or not urun:
         return "Musteri ve urun kodu gerekli."
-    musteri = _musteri_coz(musteri)
+
+    coz = _musteri_coz(musteri_girilen)
+    tur = coz["tur"]
+    musteri = coz["kayit"]
     urun = _urun_coz(urun)
+
+    if tur is None:
+        return (f"'{musteri_girilen}' adinda kayitli bir musteri veya "
+                "potansiyel musteri (Lead) bulunamadi.")
+
+    if tur == "Lead":
+        standart = _standart_fiyat(urun)
+        return json.dumps({
+            "gecmis_var": False,
+            "musteri_turu": "Lead",
+            "standart_fiyat": standart,
+            "not": "Bu bir potansiyel musteri (Lead); tanim geregi gecmis "
+                   "alimi olamaz, standart fiyat onerilir.",
+        }, ensure_ascii=False, default=str)
 
     err = _guard("Sales Invoice")
     if err:
@@ -695,6 +730,7 @@ def _tool_fiyat_onerisi(args):
 
         return json.dumps({
             "gecmis_var": True,
+            "musteri_turu": "Customer",
             "eski_fiyat": eski_fiyat,
             "eski_tarih": str(eski_tarih),
             "enflasyon_yuzde": round(enf_yuzde, 2) if enf_yuzde is not None else None,
@@ -707,6 +743,7 @@ def _tool_fiyat_onerisi(args):
     standart = _standart_fiyat(urun)
     return json.dumps({
         "gecmis_var": False,
+        "musteri_turu": "Customer",
         "standart_fiyat": standart,
         "not": "Bu musterinin bu urun icin gecmis alimi yok, standart fiyat onerilir.",
     }, ensure_ascii=False, default=str)
@@ -714,24 +751,29 @@ def _tool_fiyat_onerisi(args):
 
 def _tool_teklif_taslagi(args):
     """
-    Musteri + urun + miktar icin DOGRU YAPIDA bir Quotation taslagi hazirlar.
-    - Musteri/urun adlarini gercek kayit adlarina cozer (Turkce karakter farki dahil).
-    - Fiyati _tool_fiyat_onerisi ile hesaplar (gecmis alim + enflasyon/kur, yoksa standart).
-    - Quotation'in GERCEK alanlariyla doner: quotation_to, party_name, items[].
+    Musteri (VEYA potansiyel musteri/Lead) + urun + miktar icin DOGRU YAPIDA
+    bir Quotation taslagi hazirlar.
+    - Ismi cozer: once Customer'da, bulamazsa Lead'de arar.
+    - Fiyati _tool_fiyat_onerisi ile hesaplar (Lead ise dogrudan standart fiyat).
+    - Quotation'in GERCEK alanlariyla doner: quotation_to (Customer/Lead),
+      party_name, items[].
     SALT-OKUNUR: hicbir kayit olusturmaz/kaydetmez.
     """
-    musteri = args.get("musteri")
+    musteri_girilen = args.get("musteri")
     urun = args.get("urun")
     miktar = args.get("miktar") or 1
 
-    if not musteri or not urun:
+    if not musteri_girilen or not urun:
         return "Musteri ve urun bilgisi gerekli."
 
-    musteri_cozulmus = _musteri_coz(musteri)
+    coz = _musteri_coz(musteri_girilen)
+    tur = coz["tur"]
+    musteri_cozulmus = coz["kayit"]
     urun_cozulmus = _urun_coz(urun)
 
-    if not frappe.db.exists("Customer", musteri_cozulmus):
-        return f"'{musteri}' adinda kayitli bir musteri bulunamadi."
+    if tur is None:
+        return (f"'{musteri_girilen}' adinda kayitli bir musteri veya "
+                "potansiyel musteri (Lead) bulunamadi.")
     if not frappe.db.exists("Item", urun_cozulmus):
         return f"'{urun}' adinda kayitli bir urun bulunamadi."
 
@@ -757,7 +799,7 @@ def _tool_teklif_taslagi(args):
         "_action": "form_taslak",
         "doctype": "Quotation",
         "alanlar": {
-            "quotation_to": "Customer",
+            "quotation_to": tur,  # "Customer" veya "Lead"
             "party_name": musteri_cozulmus,
             "items": [
                 {"item_code": urun_cozulmus, "qty": miktar, "rate": birim_fiyat},
@@ -765,6 +807,7 @@ def _tool_teklif_taslagi(args):
         },
         "ozet": {
             "musteri": musteri_cozulmus,
+            "musteri_turu": tur,
             "urun": urun_cozulmus,
             "miktar": miktar,
             "birim_fiyat": birim_fiyat,
@@ -838,10 +881,11 @@ TOOLS_SPEC = [
     {"type": "function", "function": {
         "name": "fiyat_onerisi",
         "description": (
-            "Musteri + urun icin fiyat onerisi hesaplar. Musterinin bu "
-            "urunden gecmis alimi varsa, o fiyati enflasyon (TUFE) ve dolar "
-            "kuru degisimine gore gunceller (hangisi yuksekse onu kullanir). "
-            "Gecmis yoksa standart satis fiyatini oneri. "
+            "Musteri VEYA potansiyel musteri (Lead) + urun icin fiyat "
+            "onerisi hesaplar. Kayitli musterinin gecmis alimi varsa, o "
+            "fiyati enflasyon (TUFE) ve dolar kuru degisimine gore gunceller "
+            "(hangisi yuksekse onu kullanir). Gecmis yoksa VEYA potansiyel "
+            "musteri (Lead) ise standart satis fiyatini onerir. "
             "'teklif ver', 'fiyat oner', 'ne kadara verelim' gibi isteklerde "
             "form_doldur'dan ONCE bu araci cagir."
         ),
@@ -853,11 +897,12 @@ TOOLS_SPEC = [
     {"type": "function", "function": {
         "name": "teklif_taslagi",
         "description": (
-            "Musteri+urun+miktar icin DOGRU YAPIDA Quotation (teklif) taslagi "
-            "hazirlar. Isimleri otomatik cozer, fiyati hesaplar, satir tablosunu "
-            "dogru doldurur. Teklif/fiyat/fatura-benzeri istekler icin 'form_doldur' "
-            "YERINE bunu kullan — form_doldur Quotation/Sales Invoice gibi satir "
-            "tablolu belgeler icin DOGRU CALISMAZ."
+            "Musteri VEYA potansiyel musteri (Lead) + urun + miktar icin DOGRU "
+            "YAPIDA Quotation (teklif) taslagi hazirlar. Isimleri otomatik cozer "
+            "(once Customer'da, sonra Lead'de arar), fiyati hesaplar, satir "
+            "tablosunu dogru doldurur. Teklif/fiyat/fatura-benzeri istekler icin "
+            "'form_doldur' YERINE bunu kullan — form_doldur Quotation/Sales "
+            "Invoice gibi satir tablolu belgeler icin DOGRU CALISMAZ."
         ),
         "parameters": {"type": "object", "properties": {
             "musteri": {"type": "string"},
@@ -989,6 +1034,9 @@ def _system_prompt(context=None):
         "kendisinin belirtmesi gerektigini soyle.\n"
         "- Enflasyon/kur verisi alinamadiysa bunu durustce soyle, uydurma.\n"
         "- Miktar belirtilmediyse taslak acmadan once miktari sor.\n"
+        "- 'potansiyel musteri', 'aday musteri' gibi ifadeler Lead demektir; "
+        "'musteri_turu': 'Lead' donerse bunun henuz kayitli musteri olmadigini, "
+        "gecmis alim olamayacagini ve standart fiyat onerildigini belirt.\n"
         "\n"
         "COK ONEMLI - DOGRULUK KURALI:\n"
         "- SADECE gercekten cagirdigin araclarin sonucuna dayanarak konus.\n"
