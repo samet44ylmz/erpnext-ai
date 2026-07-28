@@ -583,6 +583,31 @@ def _musteri_coz(girilen_ad):
     return girilen_ad
 
 
+def _urun_coz(girilen):
+    """
+    Kullanicinin yazdigi urun adini/kodunu gercek item_code'a cevirir.
+    'Takim' yazilirsa '1234' gibi gercek kodu bulur.
+    """
+    if not girilen:
+        return girilen
+    try:
+        urunler = frappe.get_all("Item", fields=["item_code", "item_name"], limit_page_length=0)
+    except Exception:
+        return girilen
+    hedef = _normalize_tr(girilen)
+    for u in urunler:
+        if _normalize_tr(u.get("item_code") or "") == hedef:
+            return u["item_code"]
+    for u in urunler:
+        if _normalize_tr(u.get("item_name") or "") == hedef:
+            return u["item_code"]
+    for u in urunler:
+        ad = _normalize_tr(u.get("item_name") or "")
+        if ad and (hedef in ad or ad in hedef):
+            return u["item_code"]
+    return girilen
+
+
 def _tool_fiyat_onerisi(args):
     """
     Musteri + urun icin fiyat onerisi hazirlar.
@@ -597,6 +622,7 @@ def _tool_fiyat_onerisi(args):
     if not musteri or not urun:
         return "Musteri ve urun kodu gerekli."
     musteri = _musteri_coz(musteri)
+    urun = _urun_coz(urun)
 
     err = _guard("Sales Invoice")
     if err:
@@ -752,7 +778,7 @@ TOOLS_SPEC = [
         ),
         "parameters": {"type": "object", "properties": {
             "musteri": {"type": "string", "description": "Musteri adi"},
-            "urun": {"type": "string", "description": "Urun kodu, orn: 1234"},
+            "urun": {"type": "string", "description": "Urun adi veya kodu, orn: Takim veya 1234"},
         }, "required": ["musteri", "urun"]},
     }},
     {"type": "function", "function": {
