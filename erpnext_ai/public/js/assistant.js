@@ -293,9 +293,7 @@
 		if (u.kalan_gun != null) {
 			olculer.push({ etiket: "Yeterlilik", deger: u.kalan_gun + " gun", vurgu: u.kalan_gun < 15 });
 		}
-		if (u.esik != null) {
-			olculer.push({ etiket: "Siparis esigi", deger: u.esik + " adet" });
-		}
+
 
 		let html =
 			'<div class="eai-urun">' +
@@ -420,9 +418,30 @@
 		});
 	}
 
+	// Cana dusen "Stok Uyarisi" bildirimine tiklaninca sayfaya gitmek
+	// yerine pop-up'i tekrar acar.
+	function bildirim_tiklama_yakala() {
+		document.addEventListener(
+			"click",
+			function (e) {
+				if (e.target.closest("#eai-popup-overlay")) return;
+				const el = e.target.closest("a, .notification-item, [data-name]");
+				if (!el) return;
+				const metin = (el.textContent || "").trim();
+				if (metin.indexOf("Stok Uyarisi") === 0) {
+					e.preventDefault();
+					e.stopPropagation();
+					kritik_stok_kontrol();
+				}
+			},
+			true
+		);
+	}
+
 	function baslat() {
 		if (!window.frappe || !frappe.call) return;
 		buton_olustur();
+		bildirim_tiklama_yakala();
 		// her giriste kritik stok kontrolu -> pop-up
 		setTimeout(kritik_stok_kontrol, 2500);
 	}
