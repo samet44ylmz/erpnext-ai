@@ -553,6 +553,36 @@ def _standart_fiyat(urun_kodu):
         return None
 
 
+def _normalize_tr(s):
+    """Turkce karakterleri sadelestirip kucuk harfe cevirir (esnek karsilastirma icin)."""
+    if not s:
+        return ""
+    cevrim = str.maketrans("İIŞşĞğÜüÖöÇç", "iisSgGuUoOcC")
+    return s.translate(cevrim).lower().strip()
+
+
+def _musteri_coz(girilen_ad):
+    """
+    Kullanicinin yazdigi musteri adini, Turkce karakter farkina bakmaksizin
+    sistemdeki gercek Customer kaydiyla eslestirir. Bulamazsa girileni aynen dondurur.
+    """
+    if not girilen_ad:
+        return girilen_ad
+    try:
+        musteriler = frappe.get_all("Customer", fields=["name"], limit_page_length=0)
+    except Exception:
+        return girilen_ad
+    hedef = _normalize_tr(girilen_ad)
+    for m in musteriler:
+        if _normalize_tr(m["name"]) == hedef:
+            return m["name"]
+    # tam eslesme yoksa kismi eslesme dene
+    for m in musteriler:
+        if hedef in _normalize_tr(m["name"]) or _normalize_tr(m["name"]) in hedef:
+            return m["name"]
+    return girilen_ad
+
+
 def _tool_fiyat_onerisi(args):
     """
     Musteri + urun icin fiyat onerisi hazirlar.
@@ -566,6 +596,7 @@ def _tool_fiyat_onerisi(args):
     urun = args.get("urun")
     if not musteri or not urun:
         return "Musteri ve urun kodu gerekli."
+    musteri = _musteri_coz(musteri)
 
     err = _guard("Sales Invoice")
     if err:
@@ -846,6 +877,17 @@ def _system_prompt(context=None):
         "- Kullanici onaylarsa 'form_doldur' ile Quotation taslagi ac "
         "(musteri, urun, miktar, onerilen fiyat alanlarini doldur). "
         "Kaydetmeyi kullanici yapar.\n"
+        "\n"
+        "COK ONEMLI - DOGRULUK KURALI:\n"
+        "- SADECE gercekten cagirdigin araclarin sonucuna dayanarak konus.\n"
+        "- 'form_doldur' aracini CAGIRMADIYSAN, 'taslak hazirladim', "
+        "'form olusturdum' gibi ifadeler KULLANMA. Bunu soylemek icin o araci "
+        "GERCEKTEN cagirmis olman sart.\n"
+        "- Bir islemi yaptigini iddia etmeden once, o islemi yapan araci "
+        "cagirdigindan emin ol. Yapmadigin bir seyi yapmis gibi anlatma.\n"
+        "- Kullanici teklif/fiyat/form istediginde ve yeterli bilgi (musteri, "
+        "urun, miktar) varsa, sadece anlatma, 'form_doldur' aracini DA cagir; "
+        "sonra 'taslak hazir' de. Bilgi eksikse taslak acmadan once kullaniciya sor.\n"
         "\n"
         "- Diger sorularda kisa, net ve Turkce cevap ver."
         + ctx
