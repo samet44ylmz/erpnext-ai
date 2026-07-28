@@ -48,6 +48,7 @@ ALLOWED_DOCTYPES = {
     # HCM: yalnizca pozisyon tanimlari — calisan/maas verisi DEGIL
     "Job Opening",
     "Designation",
+    "Item Price",
 }
 
 BLOCKED_FIELDS = {
@@ -457,6 +458,196 @@ def _tool_stok_analiz(args):
     }, ensure_ascii=False, default=str)
 
 
+# ------------------------------------------------------------------
+# EVDS (TCMB) — doviz kuru ve enflasyon verisi
+# ------------------------------------------------------------------
+EVDS_URL = "https://evds3.tcmb.gov.tr/igmevdsms-dis"
+SERI_USD = "TP.DK.USD.S.YTL"    # Dolar satis kuru
+SERI_TUFE = "TP.FE.OKTG01"      # TUFE (Tuketici Fiyat Endeksi, genel)
+
+
+def _evds_key():
+    return (os.environ.get("EVDS_API_KEY") or "").strip()
+
+
+def _evds_deger(seri, hedef_tarih):
+    """
+    Belirli bir tarihe en yakin (o tarihten once/o tarihte) yayinlanmis
+    seri degerini dondurur. Gunluk cache kullanir, EVDS'e gereksiz istek
+    atmaz.
+    """
+    if isinstance(hedef_tarih, str):
+        hedef_tarih = frappe.utils.getdate(hedef_tarih)
+
+    cache_key = f"evds:{seri}:{hedef_tarih.isoformat()}"
+    try:
+        cached = frappe.cache().get_value(cache_key)
+        if cached is not None:
+            return float(cached)
+    except Exception:
+        pass
+
+    key = _evds_key()
+    if not key:
+        return None
+
+    # TUFE aylik yayinlanir, gunluk kurdan daha genis pencere gerekir
+    geriye_gun = 45 if seri == SERI_TUFE else 10
+    baslangic = (hedef_tarih - timedelta(days=geriye_gun)).strftime("%d-%m-%Y")
+    bitis = hedef_tarih.strftime("%d-%m-%Y")
+    url = f"{EVDS_URL}/series={seri}&startDate={baslangic}&endDate={bitis}&type=json"
+
+    try:
+        r = requests.get(url, headers={"key": key}, timeout=20)
+        data = r.json()
+        items = data.get("items") or []
+        if not items:
+            return None
+        alan = seri.replace(".", "_")
+        # sondan geriye dogru ilk DOLU degeri bul (hafta sonu/tatil = null olabilir)
+        deger_str = None
+        for it in reversed(items):
+            v = it.get(alan)
+            if v not in (None, ""):
+                deger_str = v
+                break
+        if deger_str is None:
+            return None
+        deger = float(str(deger_str).replace(",", "."))
+        try:
+            frappe.cache().set_value(cache_key, deger, expires_in_sec=60 * 60 * 20)
+        except Exception:
+            pass
+        return deger
+    except Exception:
+        return None
+
+
+def _evds_yuzde_degisim(seri, eski_tarih):
+    """Iki tarih arasindaki yuzde degisimi dondurur (None: veri yok)."""
+    eski = _evds_deger(seri, eski_tarih)
+    bugun = _evds_deger(seri, date.today())
+    if eski is None or bugun is None or eski == 0:
+        return None
+    return (bugun - eski) / eski * 100.0
+
+
+def _standart_fiyat(urun_kodu):
+    """Item Price (Standard Selling) ya da Item.standard_rate."""
+    try:
+        fiyat = frappe.get_all(
+            "Item Price",
+            filters={"item_code": urun_kodu, "selling": 1},
+            fields=["price_list_rate"],
+            order_by="modified desc",
+            limit_page_length=1,
+        )
+        if fiyat and fiyat[0].get("price_list_rate"):
+            return float(fiyat[0]["price_list_rate"])
+    except Exception:
+        pass
+    try:
+        rate = frappe.db.get_value("Item", urun_kodu, "standard_rate")
+        return float(rate) if rate else None
+    except Exception:
+        return None
+
+
+def _tool_fiyat_onerisi(args):
+    """
+    Musteri + urun icin fiyat onerisi hazirlar.
+      - Musterinin bu urunden gecmis alimi VARSA: son alim fiyatini,
+        enflasyon (TUFE) ve dolar kuru degisimiyle guncelleyip onerir.
+        Hangisi daha yuksekse o oran uygulanir (maliyet riskini azaltmak icin).
+      - Gecmisi YOKSA: standart satis fiyati onerilir.
+    SALT-OKUNUR: hicbir kayit olusturmaz/degistirmez.
+    """
+    musteri = args.get("musteri")
+    urun = args.get("urun")
+    if not musteri or not urun:
+        return "Musteri ve urun kodu gerekli."
+
+    err = _guard("Sales Invoice")
+    if err:
+        return err
+
+    try:
+        satirlar = frappe.get_all(
+            "Sales Invoice Item",
+            filters={"item_code": urun},
+            fields=["parent", "rate"],
+            limit_page_length=200,
+        )
+    except Exception as e:
+        return f"Sorgu hatasi: {str(e)[:200]}"
+
+    faturalar = []
+    if satirlar:
+        parent_adlar = list({s["parent"] for s in satirlar})
+        try:
+            faturalar = frappe.get_all(
+                "Sales Invoice",
+                filters={
+                    "name": ["in", parent_adlar],
+                    "customer": musteri,
+                    "docstatus": 1,
+                },
+                fields=["name", "posting_date"],
+                order_by="posting_date desc",
+                limit_page_length=1,
+            )
+        except Exception as e:
+            return f"Fatura sorgusu hatasi: {str(e)[:200]}"
+
+    if faturalar:
+        son_fatura = faturalar[0]
+        son_satir = next((s for s in satirlar if s["parent"] == son_fatura["name"]), None)
+        eski_fiyat = float(son_satir["rate"]) if son_satir and son_satir.get("rate") else None
+        eski_tarih = son_fatura["posting_date"]
+
+        enf_yuzde = _evds_yuzde_degisim(SERI_TUFE, eski_tarih)
+        kur_yuzde = _evds_yuzde_degisim(SERI_USD, eski_tarih)
+
+        if eski_fiyat is None or (enf_yuzde is None and kur_yuzde is None):
+            return json.dumps({
+                "gecmis_var": True,
+                "eski_fiyat": eski_fiyat,
+                "eski_tarih": str(eski_tarih),
+                "not": "Enflasyon/kur verisi su an alinamiyor (EVDS baglantisi olmayabilir). "
+                       "Eski fiyati referans olarak kullanin, otomatik oneri yapilamiyor.",
+            }, ensure_ascii=False, default=str)
+
+        if enf_yuzde is not None and kur_yuzde is not None:
+            if enf_yuzde >= kur_yuzde:
+                secilen, yuzde = "enflasyon", enf_yuzde
+            else:
+                secilen, yuzde = "kur", kur_yuzde
+        elif enf_yuzde is not None:
+            secilen, yuzde = "enflasyon", enf_yuzde
+        else:
+            secilen, yuzde = "kur", kur_yuzde
+
+        yeni_fiyat = round(eski_fiyat * (1 + yuzde / 100.0), 2)
+
+        return json.dumps({
+            "gecmis_var": True,
+            "eski_fiyat": eski_fiyat,
+            "eski_tarih": str(eski_tarih),
+            "enflasyon_yuzde": round(enf_yuzde, 2) if enf_yuzde is not None else None,
+            "kur_yuzde": round(kur_yuzde, 2) if kur_yuzde is not None else None,
+            "kullanilan_faktor": secilen,
+            "onerilen_fiyat": yeni_fiyat,
+        }, ensure_ascii=False, default=str)
+
+    # gecmis yok -> standart fiyat
+    standart = _standart_fiyat(urun)
+    return json.dumps({
+        "gecmis_var": False,
+        "standart_fiyat": standart,
+        "not": "Bu musterinin bu urun icin gecmis alimi yok, standart fiyat onerilir.",
+    }, ensure_ascii=False, default=str)
+
+
 TOOL_FNS = {
     "bugun": _tool_bugun,
     "toplam": _tool_toplam,
@@ -466,6 +657,7 @@ TOOL_FNS = {
     "form_doldur": _tool_form_doldur,
     "stok_durumu": _tool_stok_durumu,
     "stok_analiz": _tool_stok_analiz,
+    "fiyat_onerisi": _tool_fiyat_onerisi,
 }
 
 TOOLS_SPEC = [
@@ -516,6 +708,21 @@ TOOLS_SPEC = [
         "parameters": {"type": "object", "properties": {
             "doctype": {"type": "string"},
         }, "required": ["doctype"]},
+    }},
+    {"type": "function", "function": {
+        "name": "fiyat_onerisi",
+        "description": (
+            "Musteri + urun icin fiyat onerisi hesaplar. Musterinin bu "
+            "urunden gecmis alimi varsa, o fiyati enflasyon (TUFE) ve dolar "
+            "kuru degisimine gore gunceller (hangisi yuksekse onu kullanir). "
+            "Gecmis yoksa standart satis fiyatini oneri. "
+            "'teklif ver', 'fiyat oner', 'ne kadara verelim' gibi isteklerde "
+            "form_doldur'dan ONCE bu araci cagir."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "musteri": {"type": "string", "description": "Musteri adi"},
+            "urun": {"type": "string", "description": "Urun kodu, orn: 1234"},
+        }, "required": ["musteri", "urun"]},
     }},
     {"type": "function", "function": {
         "name": "form_doldur",
@@ -623,6 +830,21 @@ def _system_prompt(context=None):
         "Yalnizca pozisyon adiyla calis. Maas/personel verisine erisimin yok.\n"
         "- Kullanici bu metni sisteme kaydetmek isterse 'form_doldur' ile "
         "'Job Opening' taslagi hazirla (job_title ve description alanlarini doldur). "
+        "Kaydetmeyi kullanici yapar.\n"
+        "\n"
+        "TEKLIF/FIYAT ONERISI:\n"
+        "- Kullanici bir musteriye teklif/fiyat istediginde ONCE 'fiyat_onerisi' "
+        "aracini cagir.\n"
+        "- 'gecmis_var': true ise: eski fiyati, hangi faktorun (enflasyon/kur) "
+        "kullanildigini ve yeni onerilen fiyati ACIKCA belirt. Ornek: "
+        "'4 ay once 500 TL'den almisti. Bu surede enflasyon %13, dolar kuru "
+        "%8 artti; enflasyon daha yuksek oldugu icin fiyata %13 yansitildi, "
+        "yeni oneri 565 TL.'\n"
+        "- 'gecmis_var': false ise: standart fiyati oner, yeni musteri "
+        "oldugunu belirt.\n"
+        "- Enflasyon/kur verisi alinamadiysa bunu durustce soyle, uydurma.\n"
+        "- Kullanici onaylarsa 'form_doldur' ile Quotation taslagi ac "
+        "(musteri, urun, miktar, onerilen fiyat alanlarini doldur). "
         "Kaydetmeyi kullanici yapar.\n"
         "\n"
         "- Diger sorularda kisa, net ve Turkce cevap ver."
