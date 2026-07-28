@@ -777,16 +777,27 @@ def _tool_teklif_taslagi(args):
     if not frappe.db.exists("Item", urun_cozulmus):
         return f"'{urun}' adinda kayitli bir urun bulunamadi."
 
-    try:
-        fiyat_ham = _tool_fiyat_onerisi({"musteri": musteri_cozulmus, "urun": urun_cozulmus})
-        fiyat_data = json.loads(fiyat_ham) if isinstance(fiyat_ham, str) and fiyat_ham.startswith("{") else {}
-    except Exception:
-        fiyat_data = {}
-
-    if fiyat_data.get("gecmis_var"):
-        birim_fiyat = fiyat_data.get("onerilen_fiyat") or fiyat_data.get("eski_fiyat")
+    if tur == "Lead":
+        # Lead'in tanim geregi gecmis alimi olamaz; fiyat_onerisi'yi tekrar
+        # cagirmaya gerek yok (Lead'in sistem kimligi isim olarak eslesmez).
+        standart = _standart_fiyat(urun_cozulmus)
+        fiyat_data = {
+            "gecmis_var": False,
+            "musteri_turu": "Lead",
+            "standart_fiyat": standart,
+        }
+        birim_fiyat = standart
     else:
-        birim_fiyat = fiyat_data.get("standart_fiyat")
+        try:
+            fiyat_ham = _tool_fiyat_onerisi({"musteri": musteri_cozulmus, "urun": urun_cozulmus})
+            fiyat_data = json.loads(fiyat_ham) if isinstance(fiyat_ham, str) and fiyat_ham.startswith("{") else {}
+        except Exception:
+            fiyat_data = {}
+
+        if fiyat_data.get("gecmis_var"):
+            birim_fiyat = fiyat_data.get("onerilen_fiyat") or fiyat_data.get("eski_fiyat")
+        else:
+            birim_fiyat = fiyat_data.get("standart_fiyat")
 
     if not birim_fiyat:
         return json.dumps({
@@ -1062,6 +1073,9 @@ _TASLAK_IDDIA_KALIPLARI = (
     "formu oluşturdum", "formu olusturdum",
     "form oluşturdum", "form olusturdum",
     "taslağı oluşturdum", "taslagi olusturdum",
+    "bu bir taslaktır", "bu bir taslaktir",
+    "taslaktır, gözden", "taslaktir, gozden",
+    "taslaktır, kaydedebilir", "taslaktir, kaydedebilir",
 )
 
 
