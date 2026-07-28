@@ -532,6 +532,33 @@ def _evds_yuzde_degisim(seri, eski_tarih):
     return (bugun - eski) / eski * 100.0
 
 
+def _sadakat_indirim_yuzdesi(ciro):
+    """Son 12 aylik ciroya gore kademeli sadakat indirimi (%)."""
+    if ciro >= 300000:
+        return 12
+    if ciro >= 150000:
+        return 8
+    if ciro >= 75000:
+        return 5
+    if ciro >= 25000:
+        return 3
+    return 0
+
+
+def _musteri_son_12ay_cirosu(musteri):
+    """Musterinin son 12 aydaki onayli (docstatus=1) toplam cirosu."""
+    baslangic = (date.today() - timedelta(days=365)).isoformat()
+    try:
+        rows = frappe.get_list(
+            "Sales Invoice",
+            filters={"customer": musteri, "docstatus": 1, "posting_date": [">=", baslangic]},
+            fields=["sum(grand_total) as toplam"],
+        )
+        return float(rows[0]["toplam"] or 0) if rows and rows[0].get("toplam") else 0.0
+    except Exception:
+        return 0.0
+
+
 def _standart_fiyat(urun_kodu):
     """Item Price (Standard Selling) ya da Item.standard_rate."""
     try:
@@ -726,7 +753,27 @@ def _tool_fiyat_onerisi(args):
         else:
             secilen, yuzde = "kur", kur_yuzde
 
-        yeni_fiyat = round(eski_fiyat * (1 + yuzde / 100.0), 2)
+        tahmini_fiyat = round(eski_fiyat * (1 + yuzde / 100.0), 2)
+
+        # UCUNCU FAKTOR: guncel standart fiyat (bizim kendi yaptigimiz zam/karar).
+        # Enflasyon/kur tahmini, sirketin kendi fiyat guncellemesini gormez;
+        # ikisinden HANGISI YUKSEKSE o esas alinir (kendi kararimizi es gecmeyelim).
+        guncel_standart = _standart_fiyat(urun)
+        if guncel_standart and guncel_standart > tahmini_fiyat:
+            fiyat_indirim_oncesi = guncel_standart
+            nihai_faktor = "standart_fiyat_guncellemesi"
+        else:
+            fiyat_indirim_oncesi = tahmini_fiyat
+            nihai_faktor = secilen
+
+        # SADAKAT INDIRIMI: musterinin son 12 aylik cirosuna gore kademeli
+        # indirim, en son adim olarak uygulanir (zam hesaplarindan SONRA).
+        ciro_12ay = _musteri_son_12ay_cirosu(musteri)
+        indirim_yuzde = _sadakat_indirim_yuzdesi(ciro_12ay)
+        if indirim_yuzde > 0:
+            onerilen_fiyat = round(fiyat_indirim_oncesi * (1 - indirim_yuzde / 100.0), 2)
+        else:
+            onerilen_fiyat = fiyat_indirim_oncesi
 
         return json.dumps({
             "gecmis_var": True,
@@ -735,8 +782,13 @@ def _tool_fiyat_onerisi(args):
             "eski_tarih": str(eski_tarih),
             "enflasyon_yuzde": round(enf_yuzde, 2) if enf_yuzde is not None else None,
             "kur_yuzde": round(kur_yuzde, 2) if kur_yuzde is not None else None,
-            "kullanilan_faktor": secilen,
-            "onerilen_fiyat": yeni_fiyat,
+            "guncel_standart_fiyat": guncel_standart,
+            "enflasyon_kur_tahmini": tahmini_fiyat,
+            "kullanilan_faktor": nihai_faktor,
+            "fiyat_indirim_oncesi": fiyat_indirim_oncesi,
+            "sadakat_cirosu_12ay": round(ciro_12ay, 2),
+            "sadakat_indirim_yuzde": indirim_yuzde,
+            "onerilen_fiyat": onerilen_fiyat,
         }, ensure_ascii=False, default=str)
 
     # gecmis yok -> standart fiyat
@@ -1035,11 +1087,26 @@ def _system_prompt(context=None):
         "- Kullanici teklif/form/fatura ISTERSE (musteri+urun+miktar belliyse), "
         "DOGRUDAN 'teklif_taslagi' aracini cagir (fiyat_onerisi'ni ayrica "
         "cagirmana gerek yok, teklif_taslagi bunu kendi icinde yapar).\n"
-        "- Sonucu anlatirken: eski fiyati, hangi faktorun (enflasyon/kur) "
-        "kullanildigini ve yeni fiyati ACIKCA belirt. Ornek: "
-        "'4 ay once 500 TL'den almisti. Bu surede enflasyon %13, dolar kuru "
-        "%8 artti; enflasyon daha yuksek oldugu icin fiyata %13 yansitildi, "
-        "yeni oneri 565 TL.'\n"
+        "- Sonucu anlatirken: eski fiyati, hangi faktorun (enflasyon/kur/"
+        "standart fiyat guncellemesi) kullanildigini ve yeni fiyati ACIKCA "
+        "belirt. Ornek: '4 ay once 500 TL'den almisti. Bu surede enflasyon "
+        "%13, dolar kuru %8 artti; enflasyon daha yuksek oldugu icin fiyata "
+        "%13 yansitildi, yeni oneri 565 TL.'\n"
+        "- 'kullanilan_faktor': 'standart_fiyat_guncellemesi' ise: bu, "
+        "enflasyon/kur tahmininden BAGIMSIZ olarak, urunun guncel standart "
+        "fiyatinin (sirketin kendi yaptigi fiyat guncellemesi) daha yuksek "
+        "ciktigini gosterir. Bunu acikca belirt, ornek: 'Enflasyona gore "
+        "tahmini fiyat 565 TL olurdu, ancak bu urunun guncel standart fiyati "
+        "4.000 TL'ye guncellenmis; standart fiyat daha yuksek oldugu icin o "
+        "esas alindi.'\n"
+        "- 'sadakat_indirim_yuzde' > 0 ise: musterinin son 12 ayda "
+        "('sadakat_cirosu_12ay') yeterince ciro yaptigini ve bu yuzden "
+        "sadakat indirimi uygulandigini belirt. Ornek: 'Bu musteri son 12 "
+        "ayda 180.000 TL ciro yapmis, bu nedenle %8 sadakat indirimi "
+        "uygulandi; 4.000 TL yerine 3.680 TL onerildi.' Indirim oncesi "
+        "fiyat 'fiyat_indirim_oncesi' alaninda mevcut.\n"
+        "- Sadakat indirimi SADECE kayitli musteriler (Customer) icindir; "
+        "potansiyel musteride (Lead) gecmis olmadigi icin indirim de yoktur.\n"
         "- Gecmis alim yoksa: standart fiyat kullanildigini belirt.\n"
         "- '_action': 'fiyat_bulunamadi' donerse, kullaniciya birim fiyati "
         "kendisinin belirtmesi gerektigini soyle.\n"
