@@ -68,12 +68,27 @@
 				if (!window.cur_frm) return;
 				const alanlar = taslak.alanlar || {};
 				let dolan = 0;
+				const eklenenSatirlar = []; // gec fiyat duzeltmesi icin
+
 				Object.keys(alanlar).forEach((k) => {
 					try {
 						if (k === "items" && Array.isArray(alanlar[k])) {
-							// satir tablosu (urun kalemleri) -- add_child ile eklenir
+							// satir tablosu (urun kalemleri) -- add_child ile eklenir.
+							// ERPNext item_code yazilinca kendi fiyatini otomatik
+							// getirir; bizim onerdigimiz fiyati asagida GEC ama
+							// KESIN olarak tekrar yazacagiz.
 							alanlar[k].forEach((satir) => {
-								cur_frm.add_child("items", satir);
+								const row = cur_frm.add_child("items", {
+									item_code: satir.item_code,
+									qty: satir.qty,
+								});
+								if (satir.rate != null) {
+									eklenenSatirlar.push({
+										cdt: row.doctype,
+										cdn: row.name,
+										rate: satir.rate,
+									});
+								}
 							});
 							cur_frm.refresh_field("items");
 							dolan++;
@@ -85,6 +100,17 @@
 						// bu alan doldurulamadi, digerlerine devam
 					}
 				});
+
+				// ERPNext'in otomatik fiyat getirme islemi bitsin, sonra
+				// bizim onerdigimiz fiyati kesin olarak uygula.
+				if (eklenenSatirlar.length) {
+					setTimeout(() => {
+						eklenenSatirlar.forEach((s) => {
+							frappe.model.set_value(s.cdt, s.cdn, "rate", s.rate);
+						});
+						cur_frm.refresh_field("items");
+					}, 900);
+				}
 				frappe.show_alert(
 					{
 						message: __(
