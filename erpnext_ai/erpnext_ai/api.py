@@ -712,6 +712,67 @@ def _tool_fiyat_onerisi(args):
     }, ensure_ascii=False, default=str)
 
 
+def _tool_teklif_taslagi(args):
+    """
+    Musteri + urun + miktar icin DOGRU YAPIDA bir Quotation taslagi hazirlar.
+    - Musteri/urun adlarini gercek kayit adlarina cozer (Turkce karakter farki dahil).
+    - Fiyati _tool_fiyat_onerisi ile hesaplar (gecmis alim + enflasyon/kur, yoksa standart).
+    - Quotation'in GERCEK alanlariyla doner: quotation_to, party_name, items[].
+    SALT-OKUNUR: hicbir kayit olusturmaz/kaydetmez.
+    """
+    musteri = args.get("musteri")
+    urun = args.get("urun")
+    miktar = args.get("miktar") or 1
+
+    if not musteri or not urun:
+        return "Musteri ve urun bilgisi gerekli."
+
+    musteri_cozulmus = _musteri_coz(musteri)
+    urun_cozulmus = _urun_coz(urun)
+
+    if not frappe.db.exists("Customer", musteri_cozulmus):
+        return f"'{musteri}' adinda kayitli bir musteri bulunamadi."
+    if not frappe.db.exists("Item", urun_cozulmus):
+        return f"'{urun}' adinda kayitli bir urun bulunamadi."
+
+    try:
+        fiyat_ham = _tool_fiyat_onerisi({"musteri": musteri_cozulmus, "urun": urun_cozulmus})
+        fiyat_data = json.loads(fiyat_ham) if isinstance(fiyat_ham, str) and fiyat_ham.startswith("{") else {}
+    except Exception:
+        fiyat_data = {}
+
+    if fiyat_data.get("gecmis_var"):
+        birim_fiyat = fiyat_data.get("onerilen_fiyat") or fiyat_data.get("eski_fiyat")
+    else:
+        birim_fiyat = fiyat_data.get("standart_fiyat")
+
+    if not birim_fiyat:
+        return json.dumps({
+            "_action": "fiyat_bulunamadi",
+            "not": "Bu urun icin ne gecmis fiyat ne standart fiyat tanimli. "
+                   "Birim fiyati siz belirtmelisiniz.",
+        }, ensure_ascii=False, default=str)
+
+    return json.dumps({
+        "_action": "form_taslak",
+        "doctype": "Quotation",
+        "alanlar": {
+            "quotation_to": "Customer",
+            "party_name": musteri_cozulmus,
+            "items": [
+                {"item_code": urun_cozulmus, "qty": miktar, "rate": birim_fiyat},
+            ],
+        },
+        "ozet": {
+            "musteri": musteri_cozulmus,
+            "urun": urun_cozulmus,
+            "miktar": miktar,
+            "birim_fiyat": birim_fiyat,
+            "fiyat_kaynagi": fiyat_data,
+        },
+    }, ensure_ascii=False, default=str)
+
+
 TOOL_FNS = {
     "bugun": _tool_bugun,
     "toplam": _tool_toplam,
@@ -722,6 +783,7 @@ TOOL_FNS = {
     "stok_durumu": _tool_stok_durumu,
     "stok_analiz": _tool_stok_analiz,
     "fiyat_onerisi": _tool_fiyat_onerisi,
+    "teklif_taslagi": _tool_teklif_taslagi,
 }
 
 TOOLS_SPEC = [
@@ -789,12 +851,27 @@ TOOLS_SPEC = [
         }, "required": ["musteri", "urun"]},
     }},
     {"type": "function", "function": {
+        "name": "teklif_taslagi",
+        "description": (
+            "Musteri+urun+miktar icin DOGRU YAPIDA Quotation (teklif) taslagi "
+            "hazirlar. Isimleri otomatik cozer, fiyati hesaplar, satir tablosunu "
+            "dogru doldurur. Teklif/fiyat/fatura-benzeri istekler icin 'form_doldur' "
+            "YERINE bunu kullan — form_doldur Quotation/Sales Invoice gibi satir "
+            "tablolu belgeler icin DOGRU CALISMAZ."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "musteri": {"type": "string"},
+            "urun": {"type": "string"},
+            "miktar": {"type": "integer", "description": "varsayilan 1"},
+        }, "required": ["musteri", "urun"]},
+    }},
+    {"type": "function", "function": {
         "name": "form_doldur",
         "description": (
-            "Yeni kayit icin FORM TASLAGI hazirlar (kaydetmez!). "
-            "Kullanici 'fatura kes', 'teklif hazirla' derse kullan. "
-            "Kullanicinin verdigi TUM bilgileri (musteri, tutar, urun, miktar) "
-            "'alanlar' sozlugune MUTLAKA yerlestir. Bos birakma."
+            "Yeni kayit icin FORM TASLAGI hazirlar (kaydetmez!). Job Opening gibi "
+            "BASIT (satir tablosu olmayan) belgeler icin kullan. "
+            "Quotation/Sales Invoice/Sales Order gibi urun satiri iceren teklif/"
+            "fatura istekleri icin BUNU DEGIL, 'teklif_taslagi' aracini kullan."
         ),
         "parameters": {"type": "object", "properties": {
             "doctype": {"type": "string", "description": "orn: Sales Invoice, Quotation"},
@@ -897,19 +974,21 @@ def _system_prompt(context=None):
         "Kaydetmeyi kullanici yapar.\n"
         "\n"
         "TEKLIF/FIYAT ONERISI:\n"
-        "- Kullanici bir musteriye teklif/fiyat istediginde ONCE 'fiyat_onerisi' "
-        "aracini cagir.\n"
-        "- 'gecmis_var': true ise: eski fiyati, hangi faktorun (enflasyon/kur) "
-        "kullanildigini ve yeni onerilen fiyati ACIKCA belirt. Ornek: "
+        "- Kullanici SADECE fiyat sorarsa (teklif taslagi degil), 'fiyat_onerisi' "
+        "aracini kullan ve sonucu anlat.\n"
+        "- Kullanici teklif/form/fatura ISTERSE (musteri+urun+miktar belliyse), "
+        "DOGRUDAN 'teklif_taslagi' aracini cagir (fiyat_onerisi'ni ayrica "
+        "cagirmana gerek yok, teklif_taslagi bunu kendi icinde yapar).\n"
+        "- Sonucu anlatirken: eski fiyati, hangi faktorun (enflasyon/kur) "
+        "kullanildigini ve yeni fiyati ACIKCA belirt. Ornek: "
         "'4 ay once 500 TL'den almisti. Bu surede enflasyon %13, dolar kuru "
         "%8 artti; enflasyon daha yuksek oldugu icin fiyata %13 yansitildi, "
         "yeni oneri 565 TL.'\n"
-        "- 'gecmis_var': false ise: standart fiyati oner, yeni musteri "
-        "oldugunu belirt.\n"
+        "- Gecmis alim yoksa: standart fiyat kullanildigini belirt.\n"
+        "- '_action': 'fiyat_bulunamadi' donerse, kullaniciya birim fiyati "
+        "kendisinin belirtmesi gerektigini soyle.\n"
         "- Enflasyon/kur verisi alinamadiysa bunu durustce soyle, uydurma.\n"
-        "- Kullanici onaylarsa 'form_doldur' ile Quotation taslagi ac "
-        "(musteri, urun, miktar, onerilen fiyat alanlarini doldur). "
-        "Kaydetmeyi kullanici yapar.\n"
+        "- Miktar belirtilmediyse taslak acmadan once miktari sor.\n"
         "\n"
         "COK ONEMLI - DOGRULUK KURALI:\n"
         "- SADECE gercekten cagirdigin araclarin sonucuna dayanarak konus.\n"
@@ -1043,10 +1122,12 @@ def ask(question, context=None):
             fn = TOOL_FNS.get(name)
             result = fn(args) if fn else f"Bilinmeyen arac: {name}"
 
-            if name == "form_doldur":
+            # form_doldur VEYA teklif_taslagi -- hangi arac olursa olsun,
+            # sonuc bir form taslagi ise yakala
+            if name in ("form_doldur", "teklif_taslagi"):
                 try:
                     parsed = json.loads(result)
-                    if parsed.get("_action") == "form_taslak":
+                    if isinstance(parsed, dict) and parsed.get("_action") == "form_taslak":
                         form_taslak = parsed
                 except Exception:
                     pass
