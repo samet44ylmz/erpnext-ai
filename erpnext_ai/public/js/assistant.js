@@ -419,16 +419,36 @@
 	}
 
 	// Cana dusen "Stok Uyarisi" bildirimine tiklaninca sayfaya gitmek
-	// yerine pop-up'i tekrar acar.
+	// yerine pop-up'i tekrar acar. Etiket/sinif adina degil, gercek metne
+	// bakar; boylece Frappe surumundeki DOM yapisi ne olursa olsun calisir.
+	function stok_uyarisi_elementi_mi(baslangic) {
+		let node = baslangic;
+		let derinlik = 0;
+		while (node && node.nodeType === 1 && derinlik < 8) {
+			const txt = (node.textContent || "").trim();
+			if (txt.indexOf("Stok Uyarisi") !== -1 && txt.length < 250) {
+				return node;
+			}
+			node = node.parentElement;
+			derinlik++;
+		}
+		return null;
+	}
+
 	function bildirim_tiklama_yakala() {
 		document.addEventListener(
 			"click",
 			function (e) {
-				if (e.target.closest("#eai-popup-overlay")) return;
-				const el = e.target.closest("a, .notification-item, [data-name]");
-				if (!el) return;
-				const metin = (el.textContent || "").trim();
-				if (metin.indexOf("Stok Uyarisi") !== -1) {
+				// kendi panelimizin/pop-up'imizin icindeki tiklamalara karisma
+				if (
+					e.target.closest(
+						"#eai-popup-overlay, #erpnext-ai-panel, #erpnext-ai-btn"
+					)
+				) {
+					return;
+				}
+				const eslesen = stok_uyarisi_elementi_mi(e.target);
+				if (eslesen) {
 					e.preventDefault();
 					e.stopPropagation();
 					e.stopImmediatePropagation();
