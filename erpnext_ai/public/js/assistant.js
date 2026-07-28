@@ -70,7 +70,14 @@
 				let dolan = 0;
 				Object.keys(alanlar).forEach((k) => {
 					try {
-						if (cur_frm.get_field(k)) {
+						if (k === "items" && Array.isArray(alanlar[k])) {
+							// satir tablosu (urun kalemleri) -- add_child ile eklenir
+							alanlar[k].forEach((satir) => {
+								cur_frm.add_child("items", satir);
+							});
+							cur_frm.refresh_field("items");
+							dolan++;
+						} else if (cur_frm.get_field(k)) {
 							cur_frm.set_value(k, alanlar[k]);
 							dolan++;
 						}
