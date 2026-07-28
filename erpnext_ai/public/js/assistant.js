@@ -428,9 +428,10 @@
 				const el = e.target.closest("a, .notification-item, [data-name]");
 				if (!el) return;
 				const metin = (el.textContent || "").trim();
-				if (metin.indexOf("Stok Uyarisi") === 0) {
+				if (metin.indexOf("Stok Uyarisi") !== -1) {
 					e.preventDefault();
 					e.stopPropagation();
+					e.stopImmediatePropagation();
 					kritik_stok_kontrol();
 				}
 			},
