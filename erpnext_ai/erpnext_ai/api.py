@@ -532,6 +532,23 @@ def _evds_yuzde_degisim(seri, eski_tarih):
     return (bugun - eski) / eski * 100.0
 
 
+def _miktar_indirim_yuzdesi(adet):
+    """
+    Bu siparisteki URUN ADEDINE gore kademeli toptan indirim (%).
+    Kademe adede gore belirlenir; indirim TUTARI ise toplam bakiye
+    uzerinden uygulanir (asagida fiyat_onerisi icinde).
+    """
+    if adet >= 50:
+        return 10
+    if adet >= 20:
+        return 6
+    if adet >= 10:
+        return 4
+    if adet >= 5:
+        return 2
+    return 0
+
+
 def _sadakat_indirim_yuzdesi(ciro):
     """Son 12 aylik ciroya gore kademeli sadakat indirimi (%)."""
     if ciro >= 300000:
@@ -661,16 +678,24 @@ def _urun_coz(girilen):
 
 def _tool_fiyat_onerisi(args):
     """
-    Musteri (VEYA potansiyel musteri/Lead) + urun icin fiyat onerisi hazirlar.
-      - Kayitli MUSTERI ve gecmis alimi VARSA: son alim fiyatini, enflasyon
-        (TUFE) ve dolar kuru degisimiyle guncelleyip onerir. Hangisi daha
-        yuksekse o oran uygulanir (maliyet riskini azaltmak icin).
-      - Musteri gecmisi YOKSA veya LEAD (potansiyel musteri) ise: standart
-        satis fiyati onerilir (Lead'in tanim geregi gecmis siparisi olamaz).
+    Musteri (VEYA potansiyel musteri/Lead) + urun (+ opsiyonel miktar) icin
+    fiyat onerisi hazirlar.
+
+    Hesaplama sirasi:
+      1) Taban fiyat: kayitli musterinin gecmis alim fiyati (enflasyon/kur ile
+         guncellenmis) VEYA guncel standart fiyat -- HANGISI YUKSEKSE (Lead
+         icin dogrudan standart fiyat, gecmis olamayacagi icin).
+      2) TOPLAM tutar (taban fiyat x miktar) uzerinden, SIRAYLA (ust uste):
+         a) Sadakat indirimi -- musterinin son 12 ayki cirosuna gore (Lead'de yok)
+         b) Buyuk siparis indirimi -- BU siparisin toplam tutarina gore (herkeste var)
+      3) Nihai toplam / miktar = onerilen birim fiyat.
+
+    Indirimler URUN BASI degil, SIPARISIN TOPLAM BAKIYESI uzerinden hesaplanir.
     SALT-OKUNUR: hicbir kayit olusturmaz/degistirmez.
     """
     musteri_girilen = args.get("musteri")
     urun = args.get("urun")
+    miktar = args.get("miktar") or 1
     if not musteri_girilen or not urun:
         return "Musteri ve urun kodu gerekli."
 
@@ -683,130 +708,140 @@ def _tool_fiyat_onerisi(args):
         return (f"'{musteri_girilen}' adinda kayitli bir musteri veya "
                 "potansiyel musteri (Lead) bulunamadi.")
 
+    # --- 1) TABAN FIYAT belirle ---
     if tur == "Lead":
-        standart = _standart_fiyat(urun)
-        return json.dumps({
-            "gecmis_var": False,
+        taban_fiyat = _standart_fiyat(urun)
+        gecmis_var = False
+        detay_gecmis = {
             "musteri_turu": "Lead",
-            "standart_fiyat": standart,
+            "standart_fiyat": taban_fiyat,
             "not": "Bu bir potansiyel musteri (Lead); tanim geregi gecmis "
-                   "alimi olamaz, standart fiyat onerilir.",
-        }, ensure_ascii=False, default=str)
-
-    err = _guard("Sales Invoice")
-    if err:
-        return err
-
-    try:
-        satirlar = frappe.get_all(
-            "Sales Invoice Item",
-            filters={"item_code": urun},
-            fields=["parent", "rate"],
-            limit_page_length=200,
-        )
-    except Exception as e:
-        return f"Sorgu hatasi: {str(e)[:200]}"
-
-    faturalar = []
-    if satirlar:
-        parent_adlar = list({s["parent"] for s in satirlar})
+                   "alimi olamaz, standart fiyat esas alinir.",
+        }
+    else:
+        err = _guard("Sales Invoice")
+        if err:
+            return err
         try:
-            faturalar = frappe.get_all(
-                "Sales Invoice",
-                filters={
-                    "name": ["in", parent_adlar],
-                    "customer": musteri,
-                    "docstatus": 1,
-                },
-                fields=["name", "posting_date"],
-                order_by="posting_date desc",
-                limit_page_length=1,
+            satirlar = frappe.get_all(
+                "Sales Invoice Item",
+                filters={"item_code": urun},
+                fields=["parent", "rate"],
+                limit_page_length=200,
             )
         except Exception as e:
-            return f"Fatura sorgusu hatasi: {str(e)[:200]}"
+            return f"Sorgu hatasi: {str(e)[:200]}"
 
-    if faturalar:
-        son_fatura = faturalar[0]
-        son_satir = next((s for s in satirlar if s["parent"] == son_fatura["name"]), None)
-        eski_fiyat = float(son_satir["rate"]) if son_satir and son_satir.get("rate") else None
-        eski_tarih = son_fatura["posting_date"]
+        faturalar = []
+        if satirlar:
+            parent_adlar = list({s["parent"] for s in satirlar})
+            try:
+                faturalar = frappe.get_all(
+                    "Sales Invoice",
+                    filters={"name": ["in", parent_adlar], "customer": musteri, "docstatus": 1},
+                    fields=["name", "posting_date"],
+                    order_by="posting_date desc",
+                    limit_page_length=1,
+                )
+            except Exception as e:
+                return f"Fatura sorgusu hatasi: {str(e)[:200]}"
 
-        enf_yuzde = _evds_yuzde_degisim(SERI_TUFE, eski_tarih)
-        kur_yuzde = _evds_yuzde_degisim(SERI_USD, eski_tarih)
+        if faturalar:
+            son_fatura = faturalar[0]
+            son_satir = next((s for s in satirlar if s["parent"] == son_fatura["name"]), None)
+            eski_fiyat = float(son_satir["rate"]) if son_satir and son_satir.get("rate") else None
+            eski_tarih = son_fatura["posting_date"]
 
-        if eski_fiyat is None or (enf_yuzde is None and kur_yuzde is None):
-            return json.dumps({
-                "gecmis_var": True,
-                "eski_fiyat": eski_fiyat,
-                "eski_tarih": str(eski_tarih),
-                "not": "Enflasyon/kur verisi su an alinamiyor (EVDS baglantisi olmayabilir). "
-                       "Eski fiyati referans olarak kullanin, otomatik oneri yapilamiyor.",
-            }, ensure_ascii=False, default=str)
+            enf_yuzde = _evds_yuzde_degisim(SERI_TUFE, eski_tarih)
+            kur_yuzde = _evds_yuzde_degisim(SERI_USD, eski_tarih)
 
-        if enf_yuzde is not None and kur_yuzde is not None:
-            if enf_yuzde >= kur_yuzde:
+            if eski_fiyat is None or (enf_yuzde is None and kur_yuzde is None):
+                return json.dumps({
+                    "gecmis_var": True,
+                    "eski_fiyat": eski_fiyat,
+                    "eski_tarih": str(eski_tarih),
+                    "not": "Enflasyon/kur verisi su an alinamiyor (EVDS baglantisi "
+                           "olmayabilir). Eski fiyati referans olarak kullanin.",
+                }, ensure_ascii=False, default=str)
+
+            if enf_yuzde is not None and kur_yuzde is not None:
+                secilen, yuzde = ("enflasyon", enf_yuzde) if enf_yuzde >= kur_yuzde else ("kur", kur_yuzde)
+            elif enf_yuzde is not None:
                 secilen, yuzde = "enflasyon", enf_yuzde
             else:
                 secilen, yuzde = "kur", kur_yuzde
-        elif enf_yuzde is not None:
-            secilen, yuzde = "enflasyon", enf_yuzde
+
+            tahmini_fiyat = round(eski_fiyat * (1 + yuzde / 100.0), 2)
+            guncel_standart = _standart_fiyat(urun)
+            if guncel_standart and guncel_standart > tahmini_fiyat:
+                taban_fiyat, nihai_faktor = guncel_standart, "standart_fiyat_guncellemesi"
+            else:
+                taban_fiyat, nihai_faktor = tahmini_fiyat, secilen
+
+            gecmis_var = True
+            detay_gecmis = {
+                "musteri_turu": "Customer",
+                "eski_fiyat": eski_fiyat,
+                "eski_tarih": str(eski_tarih),
+                "enflasyon_yuzde": round(enf_yuzde, 2) if enf_yuzde is not None else None,
+                "kur_yuzde": round(kur_yuzde, 2) if kur_yuzde is not None else None,
+                "guncel_standart_fiyat": guncel_standart,
+                "enflasyon_kur_tahmini": tahmini_fiyat,
+                "kullanilan_faktor": nihai_faktor,
+            }
         else:
-            secilen, yuzde = "kur", kur_yuzde
+            taban_fiyat = _standart_fiyat(urun)
+            gecmis_var = False
+            detay_gecmis = {
+                "musteri_turu": "Customer",
+                "standart_fiyat": taban_fiyat,
+                "not": "Bu musterinin bu urun icin gecmis alimi yok, standart fiyat esas alinir.",
+            }
 
-        tahmini_fiyat = round(eski_fiyat * (1 + yuzde / 100.0), 2)
-
-        # UCUNCU FAKTOR: guncel standart fiyat (bizim kendi yaptigimiz zam/karar).
-        # Enflasyon/kur tahmini, sirketin kendi fiyat guncellemesini gormez;
-        # ikisinden HANGISI YUKSEKSE o esas alinir (kendi kararimizi es gecmeyelim).
-        guncel_standart = _standart_fiyat(urun)
-        if guncel_standart and guncel_standart > tahmini_fiyat:
-            fiyat_indirim_oncesi = guncel_standart
-            nihai_faktor = "standart_fiyat_guncellemesi"
-        else:
-            fiyat_indirim_oncesi = tahmini_fiyat
-            nihai_faktor = secilen
-
-        # SADAKAT INDIRIMI: musterinin son 12 aylik cirosuna gore kademeli
-        # indirim, en son adim olarak uygulanir (zam hesaplarindan SONRA).
-        ciro_12ay = _musteri_son_12ay_cirosu(musteri)
-        indirim_yuzde = _sadakat_indirim_yuzdesi(ciro_12ay)
-        if indirim_yuzde > 0:
-            onerilen_fiyat = round(fiyat_indirim_oncesi * (1 - indirim_yuzde / 100.0), 2)
-        else:
-            onerilen_fiyat = fiyat_indirim_oncesi
-
+    if not taban_fiyat:
         return json.dumps({
-            "gecmis_var": True,
-            "musteri_turu": "Customer",
-            "eski_fiyat": eski_fiyat,
-            "eski_tarih": str(eski_tarih),
-            "enflasyon_yuzde": round(enf_yuzde, 2) if enf_yuzde is not None else None,
-            "kur_yuzde": round(kur_yuzde, 2) if kur_yuzde is not None else None,
-            "guncel_standart_fiyat": guncel_standart,
-            "enflasyon_kur_tahmini": tahmini_fiyat,
-            "kullanilan_faktor": nihai_faktor,
-            "fiyat_indirim_oncesi": fiyat_indirim_oncesi,
-            "sadakat_cirosu_12ay": round(ciro_12ay, 2),
-            "sadakat_indirim_yuzde": indirim_yuzde,
-            "onerilen_fiyat": onerilen_fiyat,
+            "_action": "fiyat_bulunamadi",
+            "not": "Ne gecmis fiyat ne standart fiyat tanimli. Birim fiyati siz belirtmelisiniz.",
         }, ensure_ascii=False, default=str)
 
-    # gecmis yok -> standart fiyat
-    standart = _standart_fiyat(urun)
-    return json.dumps({
-        "gecmis_var": False,
-        "musteri_turu": "Customer",
-        "standart_fiyat": standart,
-        "not": "Bu musterinin bu urun icin gecmis alimi yok, standart fiyat onerilir.",
-    }, ensure_ascii=False, default=str)
+    # --- 2) INDIRIMLER: TOPLAM tutar uzerinden, ust uste ---
+    toplam_oncesi = round(taban_fiyat * miktar, 2)
+
+    if tur == "Customer":
+        ciro_12ay = _musteri_son_12ay_cirosu(musteri)
+        sadakat_yuzde = _sadakat_indirim_yuzdesi(ciro_12ay)
+    else:
+        ciro_12ay = 0.0
+        sadakat_yuzde = 0
+
+    ara_toplam = round(toplam_oncesi * (1 - sadakat_yuzde / 100.0), 2) if sadakat_yuzde else toplam_oncesi
+
+    miktar_yuzde = _miktar_indirim_yuzdesi(miktar)
+    toplam_nihai = round(ara_toplam * (1 - miktar_yuzde / 100.0), 2) if miktar_yuzde else ara_toplam
+
+    onerilen_birim_fiyat = round(toplam_nihai / miktar, 2) if miktar else toplam_nihai
+
+    sonuc = {
+        "gecmis_var": gecmis_var,
+        "miktar": miktar,
+        "taban_birim_fiyat": taban_fiyat,
+        "toplam_oncesi_indirim": toplam_oncesi,
+        "sadakat_cirosu_12ay": round(ciro_12ay, 2),
+        "sadakat_indirim_yuzde": sadakat_yuzde,
+        "buyuk_siparis_indirim_yuzde": miktar_yuzde,
+        "toplam_nihai": toplam_nihai,
+        "onerilen_fiyat": onerilen_birim_fiyat,
+    }
+    sonuc.update(detay_gecmis)
+    return json.dumps(sonuc, ensure_ascii=False, default=str)
 
 
 def _tool_teklif_taslagi(args):
     """
     Musteri (VEYA potansiyel musteri/Lead) + urun + miktar icin DOGRU YAPIDA
     bir Quotation taslagi hazirlar.
-    - Ismi cozer: once Customer'da, bulamazsa Lead'de arar.
-    - Fiyati _tool_fiyat_onerisi ile hesaplar (Lead ise dogrudan standart fiyat).
+    - Fiyati _tool_fiyat_onerisi'ye (miktar dahil) devreder -- taban fiyat +
+      sadakat indirimi + buyuk siparis indirimi zinciri orada hesaplanir.
     - Quotation'in GERCEK alanlariyla doner: quotation_to (Customer/Lead),
       party_name, items[].
     SALT-OKUNUR: hicbir kayit olusturmaz/kaydetmez.
@@ -829,27 +864,20 @@ def _tool_teklif_taslagi(args):
     if not frappe.db.exists("Item", urun_cozulmus):
         return f"'{urun}' adinda kayitli bir urun bulunamadi."
 
-    if tur == "Lead":
-        # Lead'in tanim geregi gecmis alimi olamaz; fiyat_onerisi'yi tekrar
-        # cagirmaya gerek yok (Lead'in sistem kimligi isim olarak eslesmez).
-        standart = _standart_fiyat(urun_cozulmus)
-        fiyat_data = {
-            "gecmis_var": False,
-            "musteri_turu": "Lead",
-            "standart_fiyat": standart,
-        }
-        birim_fiyat = standart
-    else:
-        try:
-            fiyat_ham = _tool_fiyat_onerisi({"musteri": musteri_cozulmus, "urun": urun_cozulmus})
-            fiyat_data = json.loads(fiyat_ham) if isinstance(fiyat_ham, str) and fiyat_ham.startswith("{") else {}
-        except Exception:
-            fiyat_data = {}
+    # Orijinal (kullanicinin yazdigi) musteri metnini yolluyoruz; fiyat_onerisi
+    # kendi icinde tekrar cozer -- Lead'in sistem kimligini degil, yazilan
+    # ismi kullanmak gerekiyor (aksi halde Lead ismi ikinci kez cozulemez).
+    try:
+        fiyat_ham = _tool_fiyat_onerisi({
+            "musteri": musteri_girilen,
+            "urun": urun_cozulmus,
+            "miktar": miktar,
+        })
+        fiyat_data = json.loads(fiyat_ham) if isinstance(fiyat_ham, str) and fiyat_ham.startswith("{") else {}
+    except Exception:
+        fiyat_data = {}
 
-        if fiyat_data.get("gecmis_var"):
-            birim_fiyat = fiyat_data.get("onerilen_fiyat") or fiyat_data.get("eski_fiyat")
-        else:
-            birim_fiyat = fiyat_data.get("standart_fiyat")
+    birim_fiyat = fiyat_data.get("onerilen_fiyat")
 
     if not birim_fiyat:
         return json.dumps({
@@ -955,6 +983,10 @@ TOOLS_SPEC = [
         "parameters": {"type": "object", "properties": {
             "musteri": {"type": "string", "description": "Musteri adi"},
             "urun": {"type": "string", "description": "Urun adi veya kodu, orn: Takim veya 1234"},
+            "miktar": {"type": "integer", "description": (
+                "Siparis miktari (varsayilan 1). Buyuk siparis indirimi bu "
+                "miktara gore hesaplanir, o yuzden bilinen miktari MUTLAKA gonder."
+            )},
         }, "required": ["musteri", "urun"]},
     }},
     {"type": "function", "function": {
@@ -1099,14 +1131,18 @@ def _system_prompt(context=None):
         "tahmini fiyat 565 TL olurdu, ancak bu urunun guncel standart fiyati "
         "4.000 TL'ye guncellenmis; standart fiyat daha yuksek oldugu icin o "
         "esas alindi.'\n"
-        "- 'sadakat_indirim_yuzde' > 0 ise: musterinin son 12 ayda "
-        "('sadakat_cirosu_12ay') yeterince ciro yaptigini ve bu yuzden "
-        "sadakat indirimi uygulandigini belirt. Ornek: 'Bu musteri son 12 "
-        "ayda 180.000 TL ciro yapmis, bu nedenle %8 sadakat indirimi "
-        "uygulandi; 4.000 TL yerine 3.680 TL onerildi.' Indirim oncesi "
-        "fiyat 'fiyat_indirim_oncesi' alaninda mevcut.\n"
-        "- Sadakat indirimi SADECE kayitli musteriler (Customer) icindir; "
-        "potansiyel musteride (Lead) gecmis olmadigi icin indirim de yoktur.\n"
+        "- Fiyat hesabi ARTIK 2 indirim katmani icerir, TOPLAM SIPARIS "
+        "TUTARI uzerinden, ust uste (sirayla) uygulanir -- urun basi degil:\n"
+        "  1) 'sadakat_indirim_yuzde': musterinin son 12 aylik cirosuna gore "
+        "(sadece Customer'da olur, Lead'de yok).\n"
+        "  2) 'buyuk_siparis_indirim_yuzde': BU siparisteki URUN ADEDINE "
+        "gore kademe belirlenir (Customer VE Lead'de de olur), ama indirim "
+        "TUTARI toplam bakiye uzerinden uygulanir, urun basi degil.\n"
+        "- Ikisi de varsa SIRAYLA uygulandigini belirt, ornek: 'Toplam tutar "
+        "40.000 TL. Once %5 sadakat indirimi, sonra bu siparisin buyuklugune "
+        "gore %4 daha indirim uygulandi; nihai toplam 36.480 TL, adet basi "
+        "3.648 TL.' Miktar belirtilmediyse buyuk siparis indirimi hesaba "
+        "katilamayabilir, bunu belirt.\n"
         "- Gecmis alim yoksa: standart fiyat kullanildigini belirt.\n"
         "- '_action': 'fiyat_bulunamadi' donerse, kullaniciya birim fiyati "
         "kendisinin belirtmesi gerektigini soyle.\n"
