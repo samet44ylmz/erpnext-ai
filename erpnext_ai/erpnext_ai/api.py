@@ -557,7 +557,14 @@ def _normalize_tr(s):
     """Turkce karakterleri sadelestirip kucuk harfe cevirir (esnek karsilastirma icin)."""
     if not s:
         return ""
-    cevrim = str.maketrans("İIŞşĞğÜüÖöÇç", "iisSgGuUoOcC")
+    cevrim = str.maketrans({
+        "İ": "i", "I": "i", "ı": "i",  # noktali/noktasiz I farki onemli
+        "Ş": "s", "ş": "s",
+        "Ğ": "g", "ğ": "g",
+        "Ü": "u", "ü": "u",
+        "Ö": "o", "ö": "o",
+        "Ç": "c", "ç": "c",
+    })
     return s.translate(cevrim).lower().strip()
 
 
@@ -920,6 +927,35 @@ def _system_prompt(context=None):
     )
 
 
+_TASLAK_IDDIA_KALIPLARI = (
+    "taslağı hazırladım", "taslagi hazirladim",
+    "taslak hazırladım", "taslak hazirladim",
+    "formu hazırladım", "formu hazirladim",
+    "form hazırladım", "form hazirladim",
+    "formu oluşturdum", "formu olusturdum",
+    "form oluşturdum", "form olusturdum",
+    "taslağı oluşturdum", "taslagi olusturdum",
+)
+
+
+def _dogruluk_kontrolu(cevap, form_taslak):
+    """
+    AI, gercekte form_doldur cagirmadigi halde 'taslak hazirladim' derse
+    (form_taslak bos oldugu halde) bunu tespit edip duzeltme notu ekler.
+    Prompt tek basina yeterli olmadigi icin kod seviyesinde guvence.
+    """
+    if form_taslak:
+        return cevap
+    dusuk = cevap.lower()
+    if any(k in dusuk for k in _TASLAK_IDDIA_KALIPLARI):
+        cevap += (
+            "\n\n(Duzeltme: Henuz bir taslak olusturmadim. "
+            "Taslak acmami isterseniz musteri, urun ve miktari belirtip "
+            "onaylamaniz yeterli.)"
+        )
+    return cevap
+
+
 def _groq_call(messages):
     """Groq'a istek; 429/503'te bekleyip tekrar dener."""
     key = _groq_key()
@@ -986,8 +1022,10 @@ def ask(question, context=None):
         calls = msg.get("tool_calls")
 
         if not calls:
+            cevap = (msg.get("content") or "").strip() or "(cevap uretilemedi)"
+            cevap = _dogruluk_kontrolu(cevap, form_taslak)
             return {
-                "cevap": (msg.get("content") or "").strip() or "(cevap uretilemedi)",
+                "cevap": cevap,
                 "form_taslak": form_taslak,
                 "adimlar": adimlar,
             }
