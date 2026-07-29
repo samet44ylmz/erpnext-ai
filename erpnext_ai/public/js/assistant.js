@@ -561,33 +561,30 @@
 		});
 	}
 
-	function sozlesme_karti(s, idx) {
+	/** Kompakt satir: cok sayida sozlesme oldugunda kartlar yerine bu kullanilir. */
+	function sozlesme_satiri(s, idx) {
 		const bilgi = SOZLESME_DURUM_BILGI[s.durum] || { etiket: s.durum || "", sinif: "eai-d-normal" };
-		let html =
-			'<div class="eai-urun">' +
-			'<div class="eai-urun-ust">' +
-			'<span class="eai-urun-ad">' + kacisla(s.taraf || "") + "</span>" +
-			'<span class="eai-rozet ' + bilgi.sinif + '">' + bilgi.etiket + "</span>" +
+		const fiyatHtml = s.yenileme_fiyat
+			? '<span class="eai-ss-fiyat">' + Number(s.yenileme_fiyat).toLocaleString("tr-TR") + " TL</span>"
+			: '<span class="eai-ss-fiyat eai-ss-fiyat-yok">—</span>';
+		const btnHtml = s.yenileme_fiyat
+			? '<button class="eai-ss-btn" data-sozlesme-idx="' + idx + '">Teklif</button>'
+			: "";
+
+		return (
+			'<div class="eai-ss-satir">' +
+			'<span class="eai-rozet ' + bilgi.sinif + ' eai-ss-rozet">' + bilgi.etiket + "</span>" +
+			'<div class="eai-ss-orta">' +
+			'<div class="eai-ss-musteri">' + kacisla(s.taraf || "") + "</div>" +
+			'<div class="eai-ss-detay">' +
+			kacisla(s.yenileme_urun_adi || "") + " &middot; " +
+			s.kalan_gun + " gun (" + kacisla(s.bitis_tarihi || "") + ")" +
 			"</div>" +
-			'<div class="eai-olcu-satir">' +
-			'<div class="eai-olcu"><div class="eai-olcu-etiket">Bitis tarihi</div>' +
-			'<div class="eai-olcu-deger">' + kacisla(s.bitis_tarihi || "") + "</div></div>" +
-			'<div class="eai-olcu"><div class="eai-olcu-etiket">Kalan sure</div>' +
-			'<div class="eai-olcu-deger' + (s.kalan_gun <= 7 ? " eai-vurgu" : "") + '">' +
-			s.kalan_gun + " gun</div></div>" +
-			"</div>";
-
-		if (s.yenileme_fiyat) {
-			html +=
-				'<div class="eai-gerekce">En uygun yenileme teklifi: <b>' +
-				kacisla(s.yenileme_urun_adi || "") + "</b>, " + s.yenileme_ay +
-				" ay icin <b>" + s.yenileme_fiyat + " TL</b></div>" +
-				'<button class="eai-draft-btn" data-sozlesme-idx="' + idx + '">' +
-				"Teklifi goster</button>";
-		}
-
-		html += "</div>";
-		return html;
+			"</div>" +
+			fiyatHtml +
+			btnHtml +
+			"</div>"
+		);
 	}
 
 	function sozlesme_popup_goster(res) {
@@ -604,9 +601,9 @@
 
 		let govde = '<div class="eai-popup-ozet">' + bicimle(res.mesaj) + "</div>";
 		if (liste.length) {
-			govde += '<div class="eai-popup-liste">';
+			govde += '<div class="eai-ss-liste">';
 			liste.forEach(function (s, idx) {
-				govde += sozlesme_karti(s, idx);
+				govde += sozlesme_satiri(s, idx);
 			});
 			govde += "</div>";
 		}
@@ -704,8 +701,9 @@
 		buton_olustur();
 		bildirim_tiklama_yakala();
 		// her giriste kritik stok kontrolu -> pop-up
-		setTimeout(kritik_stok_kontrol, 2500);
-		setTimeout(sozlesme_kontrolu, 4500);
+		// stok artik nadiren ilgili (hizmet agirlikli), sozlesme oncelikli
+		setTimeout(sozlesme_kontrolu, 400);
+		setTimeout(kritik_stok_kontrol, 1200);
 		fetch_timesheet_proje_gizle();
 	}
 
