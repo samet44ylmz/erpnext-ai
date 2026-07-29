@@ -1692,6 +1692,34 @@ def sozlesme_kontrolu():
 
 
 @frappe.whitelist()
+def hizmet_fiyat_hesapla(musteri, urun, ay_sayisi):
+    """
+    Manuel olarak fatura/teklif ekranindan cagirilir (AI/Groq'suz, anlik).
+    Musteri + hizmet urunu + ay sayisi verilince, tum fiyat mantigini
+    (yillik standart/gecmis fiyat + sektor + sadakat + oranli hesap)
+    calistirip TOPLAM tutari dondurur. Kullanicinin tarih girince satirin
+    fiyatinin otomatik guncellenmesini saglar.
+    SALT-OKUNUR: hicbir kayit olusturmaz/degistirmez.
+    """
+    try:
+        ay_sayisi = int(float(ay_sayisi))
+    except Exception:
+        ay_sayisi = 1
+    ay_sayisi = max(ay_sayisi, 1)
+
+    try:
+        ham = _tool_fiyat_onerisi({"musteri": musteri, "urun": urun, "miktar": ay_sayisi})
+        veri = json.loads(ham) if isinstance(ham, str) and ham.startswith("{") else {}
+    except Exception:
+        veri = {}
+
+    return {
+        "toplam": veri.get("toplam_nihai"),
+        "detay": veri,
+    }
+
+
+@frappe.whitelist()
 def durum():
     return {
         "hazir": bool(_groq_key()),
