@@ -226,6 +226,10 @@
 	// ----------------------------------------------------------
 	// Gonderme
 	// ----------------------------------------------------------
+	// Sohbet gecmisi -- coklu adim gereken sorular (KDV/tevkifat gibi)
+	// icin AI'in onceki baglami hatirlamasi gerekir.
+	const eai_sohbet_gecmisi = [];
+
 	function gonder() {
 		const inp = document.getElementById("eai-input");
 		const soru = (inp.value || "").trim();
@@ -238,18 +242,25 @@
 		const btn = document.getElementById("eai-send");
 		btn.disabled = true;
 
+		const gecmis_gonderilecek = eai_sohbet_gecmisi.slice(-12);
+
 		frappe.call({
 			method: "erpnext_ai.erpnext_ai.api.ask",
 			args: {
 				question: soru,
 				context: JSON.stringify(mevcut_baglam()),
+				gecmis: JSON.stringify(gecmis_gonderilecek),
 			},
 			callback: function (r) {
 				btn.disabled = false;
 				bekle.remove();
 				const res = (r && r.message) || {};
-				mesaj_ekle(bicimle(res.cevap || "Cevap alinamadi."), "eai-bot", true);
+				const cevap_metni = res.cevap || "Cevap alinamadi.";
+				mesaj_ekle(bicimle(cevap_metni), "eai-bot", true);
 				if (res.form_taslak) taslak_karti_ekle(res.form_taslak);
+
+				eai_sohbet_gecmisi.push({ role: "user", content: soru });
+				eai_sohbet_gecmisi.push({ role: "assistant", content: cevap_metni });
 			},
 			error: function () {
 				btn.disabled = false;
