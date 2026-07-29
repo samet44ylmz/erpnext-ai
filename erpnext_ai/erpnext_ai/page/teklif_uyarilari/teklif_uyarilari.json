@@ -1,1 +1,18 @@
-
+{
+    "content": null,
+    "creation": "2026-07-29 00:00:00",
+    "docstatus": 0,
+    "doctype": "Page",
+    "idx": 0,
+    "modified": "2026-07-29 00:00:00",
+    "modified_by": "Administrator",
+    "module": "ERPNext AI",
+    "name": "teklif-uyarilari",
+    "owner": "Administrator",
+    "page_name": "teklif-uyarilari",
+    "restrict_to_domain": null,
+    "roles": [],
+    "standard": "Yes",
+    "system_page": 0,
+    "title": "Teklif Uyar\u0131lar\u0131"
+}
