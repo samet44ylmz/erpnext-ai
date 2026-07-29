@@ -310,7 +310,7 @@
 /* ============================================================
    Kritik stok pop-up — genis, kartli, aciklayici
    ============================================================ */
-#eai-popup-overlay {
+.eai-popup-overlay {
   position: fixed;
   inset: 0;
   background: rgba(15, 25, 41, .38);
@@ -325,7 +325,7 @@
 }
 @keyframes eai-fade { from { opacity: 0; } to { opacity: 1; } }
 
-#eai-popup {
+.eai-popup {
   width: 640px;
   max-width: 100%;
   max-height: calc(100vh - 48px);
@@ -542,15 +542,15 @@
 
 /* --- Dar ekran --- */
 @media (max-width: 640px) {
-  #eai-popup-overlay { padding: 12px; }
-  #eai-popup { border-radius: 14px; }
+  .eai-popup-overlay { padding: 12px; }
+  .eai-popup { border-radius: 14px; }
   .eai-popup-head, .eai-popup-body, .eai-popup-foot { padding-left: 16px; padding-right: 16px; }
   .eai-popup-foot { flex-wrap: wrap; }
   .eai-popup-btn, .eai-popup-btn-ghost { flex: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #eai-popup-overlay, #eai-popup { animation: none; }
+  .eai-popup-overlay, .eai-popup { animation: none; }
 }
 
 /* guven uyarisi */
