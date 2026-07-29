@@ -236,3 +236,66 @@ def urunleri_olustur():
     print("NOT: Fiyatlar PLASEHOLDER'dir. Gercek liste fiyatlarinizla "
           "Item > Standart Oran alanindan guncelleyin.")
     return {"olusan": olusan, "atlanan": atlanan}
+
+
+# ------------------------------------------------------------------
+# PrimeIT calisanlari
+# ------------------------------------------------------------------
+CALISANLAR = [
+    "Ahmet Sancaktutan",
+    "Atalay Aydın",
+    "Batın Göztok",
+    "Burak Özgün",
+    "Burak Sağlam",
+    "Erbil Can Keleş",
+    "Furkan Sancaktutan",
+    "Kayra Keser",
+    "Kerem Albayrak",
+    "Muhammed Zeyrek",
+    "Mehmet Albayrak",
+    "Muhammed Öcal",
+    "Musa Yıldırım",
+    "Ramazan Orhan",   # varsayim: orijinal satirda satir arasi kaybolmus
+    "Samet Gücün",     # varsayim: yukaridakiyle ayni satirdan ayrildi
+    "Hasan Aksu",
+]
+
+
+def calisanlari_olustur():
+    """PrimeIT calisanlarini Employee olarak ekler (asgari zorunlu alanlarla)."""
+    import frappe.utils
+
+    sirket = _sirket()
+    if not sirket:
+        print("Sirket bulunamadi, islem durduruldu.")
+        return
+
+    olusan, atlanan = 0, 0
+    for tam_ad in CALISANLAR:
+        parcalar = tam_ad.split(" ", 1)
+        ilk_ad = parcalar[0]
+        soy_ad = parcalar[1] if len(parcalar) > 1 else ilk_ad
+
+        # ayni isimde calisan zaten var mi (basit kontrol)
+        var = frappe.get_all("Employee", filters={"employee_name": tam_ad}, limit_page_length=1)
+        if var:
+            atlanan += 1
+            continue
+
+        try:
+            e = frappe.new_doc("Employee")
+            e.first_name = ilk_ad
+            e.last_name = soy_ad
+            e.employee_name = tam_ad
+            e.company = sirket
+            e.date_of_joining = frappe.utils.today()
+            e.status = "Active"
+            e.gender = "Erkek" if frappe.db.exists("Gender", "Erkek") else None
+            e.insert(ignore_permissions=True)
+            frappe.db.commit()
+            olusan += 1
+        except Exception as ex:
+            print(f"  Calisan olusturulamadi {tam_ad}: {str(ex)[:200]}")
+
+    print(f"\n{olusan} yeni calisan olusturuldu, {atlanan} zaten vardi.")
+    return {"olusan": olusan, "atlanan": atlanan}
