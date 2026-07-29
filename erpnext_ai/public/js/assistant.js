@@ -624,6 +624,29 @@
 		};
 	}
 
+	// ----------------------------------------------------------
+	// ERPNext'in yerlesik "Fetch Timesheet" penceresinden "Proje"
+	// alanini gizler (native JS override degil, DOM izleme).
+	// ----------------------------------------------------------
+	function fetch_timesheet_proje_gizle() {
+		const observer = new MutationObserver(function () {
+			document.querySelectorAll(".modal-dialog").forEach(function (modal) {
+				const baslik = modal.querySelector(".modal-title");
+				if (!baslik) return;
+				if ((baslik.textContent || "").indexOf("Fetch Timesheet") === -1) return;
+
+				modal.querySelectorAll(".frappe-control").forEach(function (ctrl) {
+					const etiket = ctrl.querySelector(".control-label");
+					if (etiket && (etiket.textContent || "").trim() === "Proje") {
+						const satir = ctrl.closest(".form-group") || ctrl;
+						satir.style.display = "none";
+					}
+				});
+			});
+		});
+		observer.observe(document.body, { childList: true, subtree: true });
+	}
+
 	function baslat() {
 		if (!window.frappe || !frappe.call) return;
 		buton_olustur();
@@ -631,6 +654,7 @@
 		// her giriste kritik stok kontrolu -> pop-up
 		setTimeout(kritik_stok_kontrol, 2500);
 		setTimeout(sozlesme_kontrolu, 4500);
+		fetch_timesheet_proje_gizle();
 	}
 
 	if (document.readyState === "loading") {
