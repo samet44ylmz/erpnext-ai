@@ -400,7 +400,7 @@ def _tool_stok_analiz(args):
                 oneri = 0
                 gerekce = f"Son {gecmis_gun} gunde satis yok, stok da yok."
         else:
-            kalan_gun = round(stok / gunluk, 1)
+            kalan_gun = round(stok / gunluk)  # tam sayiya yuvarla
             ihtiyac = gunluk * hedef_gun - stok
             oneri = yuvarla(ihtiyac) if ihtiyac > 0 else 0
 
