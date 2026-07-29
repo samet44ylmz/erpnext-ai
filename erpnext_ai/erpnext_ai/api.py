@@ -885,6 +885,172 @@ def _tool_fiyat_onerisi(args):
     return json.dumps(sonuc, ensure_ascii=False, default=str)
 
 
+def _tevkifat_kodu_bul(amac_metni):
+    """
+    Kullanicinin 'ne icin tevkifat' cevabina gore Tevkifat Kodlari
+    listesinden en uygun kaydi bulur (anahtar kelime ortusmesine gore).
+    Bulamazsa None doner.
+    """
+    if not amac_metni:
+        return None
+    try:
+        kayitlar = frappe.get_all(
+            "Tevkifat Kodlari", fields=["kod", "aciklama", "oran"], limit_page_length=0
+        )
+    except Exception:
+        return None
+    if not kayitlar:
+        return None
+
+    hedef = _normalize_tr(amac_metni)
+    hedef_kelimeler = set(hedef.split())
+
+    en_iyi, en_iyi_skor = None, 0
+    for k in kayitlar:
+        aciklama_norm = _normalize_tr(k.get("aciklama") or "")
+        aciklama_kelimeler = set(aciklama_norm.split())
+        skor = len(hedef_kelimeler & aciklama_kelimeler)
+        if hedef in aciklama_norm or aciklama_norm in hedef:
+            skor += 5
+        if skor > en_iyi_skor:
+            en_iyi_skor = skor
+            en_iyi = k
+    return en_iyi if en_iyi_skor > 0 else None
+
+
+def _turkey_tax_sablonu():
+    """Sistemde tanimli 'Turkey Tax' ile baslayan vergi sablonunu bulur."""
+    try:
+        return frappe.db.get_value(
+            "Sales Taxes and Charges Template",
+            {"name": ["like", "Turkey Tax%"]},
+            "name",
+        )
+    except Exception:
+        return None
+
+
+def _tool_fatura_taslagi(args):
+    """
+    Musteri + urun + miktar icin Satis Faturasi (Sales Invoice) taslagi
+    hazirlar. teklif_taslagi ile AYNI fiyat motorunu kullanir, farkli olarak:
+      - KDV dahil edilsin mi (kdv_dahil)
+      - Tevkifatli mi (tevkifatli), oyleyse hangi kod (tevkifat_amaci'na
+        gore Tevkifat Kodlari listesinden otomatik bulunur)
+    SALT-OKUNUR: hicbir kayit olusturmaz/kaydetmez, sadece taslak dondurur.
+    """
+    musteri_girilen = args.get("musteri")
+    urun = args.get("urun")
+    miktar = args.get("miktar") or 1
+    sure_bazli = bool(args.get("sure_bazli"))
+    kdv_dahil = bool(args.get("kdv_dahil"))
+    tevkifatli = bool(args.get("tevkifatli"))
+    tevkifat_amaci = args.get("tevkifat_amaci")
+
+    if not musteri_girilen or not urun:
+        return "Musteri ve urun bilgisi gerekli."
+
+    coz = _musteri_coz(musteri_girilen)
+    tur = coz["tur"]
+    musteri_cozulmus = coz["kayit"]
+    urun_cozulmus = _urun_coz(urun)
+
+    if tur != "Customer":
+        return ("Satis faturasi yalnizca kayitli musterilere (Customer) "
+                "kesilebilir; Lead'e fatura kesilmez, once teklif/siparis "
+                "surecinden gecmesi gerekir.")
+    if not frappe.db.exists("Item", urun_cozulmus):
+        return f"'{urun}' adinda kayitli bir urun bulunamadi."
+
+    try:
+        fiyat_ham = _tool_fiyat_onerisi({
+            "musteri": musteri_girilen, "urun": urun_cozulmus,
+            "miktar": miktar, "sure_bazli": sure_bazli,
+        })
+        fiyat_data = json.loads(fiyat_ham) if isinstance(fiyat_ham, str) and fiyat_ham.startswith("{") else {}
+    except Exception:
+        fiyat_data = {}
+
+    birim_fiyat = fiyat_data.get("onerilen_fiyat")
+    toplam_fiyat = fiyat_data.get("toplam_nihai")
+
+    if not birim_fiyat:
+        return json.dumps({
+            "_action": "fiyat_bulunamadi",
+            "not": "Bu urun icin ne gecmis fiyat ne standart fiyat tanimli. "
+                   "Birim fiyati siz belirtmelisiniz.",
+        }, ensure_ascii=False, default=str)
+
+    if sure_bazli:
+        bugun = frappe.utils.getdate()
+        bitis = frappe.utils.add_months(bugun, miktar)
+        urun_adi = frappe.db.get_value("Item", urun_cozulmus, "item_name") or urun_cozulmus
+        satir = {
+            "item_code": urun_cozulmus,
+            "qty": 1,
+            "rate": toplam_fiyat,
+            "aciklama": f"{urun_adi} — {miktar} Ay",
+            "hizmet_baslangic": bugun.isoformat(),
+            "hizmet_bitis": bitis.isoformat(),
+        }
+    else:
+        satir = {"item_code": urun_cozulmus, "qty": miktar, "rate": birim_fiyat}
+
+    alanlar = {
+        "customer": musteri_cozulmus,
+        "items": [satir],
+    }
+
+    # --- KDV ---
+    if kdv_dahil:
+        sablon = _turkey_tax_sablonu()
+        if sablon:
+            alanlar["taxes_and_charges"] = sablon
+
+    # --- Tevkifat ---
+    tevkifat_bilgi = None
+    if tevkifatli:
+        bulunan = _tevkifat_kodu_bul(tevkifat_amaci)
+        if bulunan:
+            kdv_orani = 18.0  # Turkey Tax sablonunun bilinen orani
+            kdv_tutari = round(toplam_fiyat * kdv_orani / 100.0, 2)
+            tevkifat_tutari = round(kdv_tutari * bulunan["oran"] / 100.0, 2)
+            alanlar["custom_tevkifat_var_mi"] = 1
+            alanlar["custom_tevkifat_kodu"] = bulunan["kod"]
+            alanlar["custom_tevkifat_aciklaması"] = bulunan["aciklama"]
+            alanlar["custom_tevkifat_tutarı"] = tevkifat_tutari
+            tevkifat_bilgi = {
+                "kod": bulunan["kod"],
+                "aciklama": bulunan["aciklama"],
+                "oran": bulunan["oran"],
+                "kdv_tutari": kdv_tutari,
+                "tevkifat_tutari": tevkifat_tutari,
+            }
+        else:
+            tevkifat_bilgi = {
+                "not": f"'{tevkifat_amaci}' icin uygun bir tevkifat kodu bulunamadi. "
+                       "Lutfen kodu kendiniz secin.",
+            }
+
+    return json.dumps({
+        "_action": "form_taslak",
+        "doctype": "Sales Invoice",
+        "alanlar": alanlar,
+        "ozet": {
+            "musteri": musteri_cozulmus,
+            "urun": urun_cozulmus,
+            "sure_bazli": sure_bazli,
+            "miktar": miktar,
+            "birim_fiyat": birim_fiyat,
+            "toplam_fiyat": toplam_fiyat,
+            "kdv_dahil": kdv_dahil,
+            "tevkifatli": tevkifatli,
+            "tevkifat_bilgi": tevkifat_bilgi,
+            "fiyat_kaynagi": fiyat_data,
+        },
+    }, ensure_ascii=False, default=str)
+
+
 def _tool_teklif_taslagi(args):
     """
     Musteri (VEYA potansiyel musteri/Lead) + urun + miktar icin DOGRU YAPIDA
@@ -990,6 +1156,7 @@ TOOL_FNS = {
     "stok_analiz": _tool_stok_analiz,
     "fiyat_onerisi": _tool_fiyat_onerisi,
     "teklif_taslagi": _tool_teklif_taslagi,
+    "fatura_taslagi": _tool_fatura_taslagi,
 }
 
 TOOLS_SPEC = [
@@ -1090,6 +1257,39 @@ TOOLS_SPEC = [
                 "ifadeye gore verilir, urun koduna (SRV-/PRM-) GORE DEGIL."
             )},
         }, "required": ["musteri", "urun", "sure_bazli"]},
+    }},
+    {"type": "function", "function": {
+        "name": "fatura_taslagi",
+        "description": (
+            "Musteri + urun + miktar icin Sales Invoice (Satis Faturasi) "
+            "taslagi hazirlar (kaydetmez!). 'fatura kes' isteklerinde "
+            "teklif_taslagi YERINE bunu kullan. Fatura kesmeden ONCE "
+            "MUTLAKA KDV ve tevkifat tercihini sor (asagidaki kurallara "
+            "bak), sonra bu araci cagir."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "musteri": {"type": "string"},
+            "urun": {"type": "string"},
+            "miktar": {"type": "integer"},
+            "sure_bazli": {"type": "boolean", "description": (
+                "true: 'ay/yil' ifadesi -> miktar ay sayisi, yillik fiyattan "
+                "oranli hesap. false: 'adet/lisans' ifadesi -> direkt carpim."
+            )},
+            "kdv_dahil": {"type": "boolean", "description": (
+                "Kullanici KDV ekleme sorusuna 'evet' dediyse true, "
+                "'hayir' dediyse false."
+            )},
+            "tevkifatli": {"type": "boolean", "description": (
+                "Kullanici tevkifat sorusuna 'evet' dediyse true, "
+                "'hayir' dediyse false."
+            )},
+            "tevkifat_amaci": {"type": "string", "description": (
+                "SADECE tevkifatli=true ise doldur. Kullanicinin 'ne icin "
+                "tevkifat' sorusuna verdigi cevap (orn: 'reklam hizmeti', "
+                "'nakliye', 'temizlik'). Bu metinle en uygun tevkifat kodu "
+                "otomatik bulunur."
+            )},
+        }, "required": ["musteri", "urun", "sure_bazli", "kdv_dahil", "tevkifatli"]},
     }},
     {"type": "function", "function": {
         "name": "form_doldur",
@@ -1263,6 +1463,27 @@ def _system_prompt(context=None):
         "bir sekilde ifade et. Sebep hep ayni kalsin (uydurma), ama ifade "
         "bicimi tekrar etmesin.\n"
         "\n"
+        "FATURA (SATIS FATURASI) vs TEKLIF (QUOTATION) AYRIMI:\n"
+        "- 'teklif hazirla/ver/oner' -> 'teklif_taslagi' kullan. KDV/tevkifat "
+        "SORMA, teklif asamasinda bu detaylar sorulmaz.\n"
+        "- 'fatura kes/olustur', 'satis faturasi' -> 'fatura_taslagi' kullan. "
+        "Bu araci cagirmadan ONCE MUTLAKA sirayla sor (cevaplari onceki "
+        "mesajlardan da kontrol et, tekrar sorma):\n"
+        "  1) 'KDV dahil edeyim mi?' (evet/hayir)\n"
+        "  2) 'Tevkifatli olsun mu?' (evet/hayir)\n"
+        "  3) Tevkifatli 'evet' ise: 'Ne icin tevkifat uygulanacak?' diye sor "
+        "(orn: reklam hizmeti, nakliye, temizlik vb.). Cevabi 'tevkifat_amaci' "
+        "olarak gonder; en uygun kodu SEN SECMEZSIN, arac otomatik bulur, "
+        "sen sadece amaci ilet.\n"
+        "- Musteri KDV/tevkifat sorularina cevap vermeden fatura_taslagi'ni "
+        "CAGIRMA. Sorulari TEK mesajda birlikte de sorabilirsin (KDV mi, "
+        "tevkifat mi diye ikisini bir arada sor), ama cevap gelmeden arac "
+        "cagirma.\n"
+        "- 'tevkifat_bilgi' icinde 'not' varsa (kod bulunamadi), bunu "
+        "kullaniciya soyle ve kodu kendisinin secmesi gerektigini belirt.\n"
+        "- Tevkifat kodu bulunduysa, hangi kodun (orn. '824 - Ticari reklam "
+        "hizmetleri') ve neden secildigini KISACA acikla.\n"
+        "\n"
         "COK ONEMLI - DOGRULUK KURALI:\n"
         "- SADECE gercekten cagirdigin araclarin sonucuna dayanarak konus.\n"
         "- 'form_doldur' aracini CAGIRMADIYSAN, 'taslak hazirladim', "
@@ -1344,7 +1565,12 @@ def _groq_call(messages):
 
 
 @frappe.whitelist()
-def ask(question, context=None):
+def ask(question, context=None, gecmis=None):
+    """
+    gecmis: onceki mesajlarin JSON listesi ([{"role":"user"/"assistant",
+    "content":"..."}]) -- cok adimli sohbetlerde (orn. 'KDV dahil mi?' diye
+    sorup cevap beklemek) onceki baglamin hatirlanmasi icin gerekli.
+    """
     if isinstance(context, str):
         try:
             context = json.loads(context)
@@ -1353,8 +1579,19 @@ def ask(question, context=None):
 
     messages = [
         {"role": "system", "content": _system_prompt(context)},
-        {"role": "user", "content": question},
     ]
+
+    if gecmis:
+        try:
+            onceki = json.loads(gecmis) if isinstance(gecmis, str) else gecmis
+            if isinstance(onceki, list):
+                for m in onceki[-12:]:  # son 12 mesajla sinirla
+                    if isinstance(m, dict) and m.get("role") in ("user", "assistant") and m.get("content"):
+                        messages.append({"role": m["role"], "content": str(m["content"])[:3000]})
+        except Exception:
+            pass
+
+    messages.append({"role": "user", "content": question})
 
     adimlar = []
     form_taslak = None
