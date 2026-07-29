@@ -1838,6 +1838,10 @@ def sozlesme_kontrolu():
     secilecek_alanlar = ["name", "end_date"]
     if "party_name" in alan_adlari:
         secilecek_alanlar.append("party_name")
+    if "party_type" in alan_adlari:
+        secilecek_alanlar.append("party_type")
+    if "custom_ilgili_urun" in alan_adlari:
+        secilecek_alanlar.append("custom_ilgili_urun")
 
     filtreler = {"end_date": ["between", [bugun.isoformat(), ust_sinir]]}
     if "status" in alan_adlari:
@@ -1874,21 +1878,43 @@ def sozlesme_kontrolu():
             durum = "yakin"
         else:
             durum = "planla"
-        liste.append({
+        madde = {
             "sozlesme": s.get("name"),
             "taraf": s.get("party_name") or s.get("name"),
             "bitis_tarihi": str(bitis),
             "kalan_gun": kalan_gun,
             "durum": durum,
-        })
+        }
+
+        # Urun/hizmet biliniyorsa, YENILEME TEKLIFINI de hesapla
+        urun_kodu = s.get("custom_ilgili_urun")
+        taraf_turu = s.get("party_type")
+        if urun_kodu and madde["taraf"] and taraf_turu in ("Customer", None, ""):
+            try:
+                ham = _tool_fiyat_onerisi({
+                    "musteri": madde["taraf"], "urun": urun_kodu,
+                    "miktar": 12, "sure_bazli": True,  # varsayilan: 1 yillik yenileme onerisi
+                })
+                fiyat_data = json.loads(ham) if isinstance(ham, str) and ham.startswith("{") else {}
+                madde["yenileme_urun"] = urun_kodu
+                madde["yenileme_urun_adi"] = frappe.db.get_value("Item", urun_kodu, "item_name") or urun_kodu
+                madde["yenileme_fiyat"] = fiyat_data.get("toplam_nihai")
+                madde["yenileme_ay"] = 12
+            except Exception:
+                pass
+
+        liste.append(madde)
 
     if not liste:
         return {"var": False, "mesaj": "", "sozlesmeler": []}
 
-    ozet_satirlari = [
-        f"{l['taraf']}: {l['kalan_gun']} gun sonra ({l['bitis_tarihi']}) bitiyor"
-        for l in liste
-    ]
+    ozet_satirlari = []
+    for l in liste:
+        satir = f"{l['taraf']}: {l['kalan_gun']} gun sonra ({l['bitis_tarihi']}) bitiyor"
+        if l.get("yenileme_fiyat"):
+            satir += (f" — yenileme onerisi: {l['yenileme_urun_adi']}, "
+                      f"1 yillik {l['yenileme_fiyat']} TL")
+        ozet_satirlari.append(satir)
     veri = "\n".join(ozet_satirlari)
     mesaj = None
     try:
@@ -1896,9 +1922,10 @@ def sozlesme_kontrolu():
             {"role": "system", "content": (
                 "Sen bir sozlesme/lisans takip asistanisin. Bitis tarihi "
                 "yaklasan sozlesmeler icin kisa, net bir Turkce uyari metni "
-                "yaz. MUTLAKA taraf adini belirt. En yakin bitecekten "
-                "baslayarak anlat. 2-3 cumleyi gecme. JSON veya teknik "
-                "detay yazma, sadece dogal uyari metni."
+                "yaz. MUTLAKA taraf adini belirt. Yenileme onerisi verilmisse "
+                "(urun + fiyat), bunu da 'en uygun teklif' olarak belirt. "
+                "En yakin bitecekten baslayarak anlat. 2-4 cumleyi gecme. "
+                "JSON veya teknik detay yazma, sadece dogal uyari metni."
             )},
             {"role": "user", "content": f"Yaklasan sozlesmeler:\n{veri}"},
         ]
