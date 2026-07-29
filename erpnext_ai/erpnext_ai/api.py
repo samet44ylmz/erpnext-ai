@@ -840,7 +840,12 @@ def _tool_fiyat_onerisi(args):
 
     # --- 2) TOPLAM tutar: hizmette YILLIK fiyattan ORANLI hesaplanir,
     # urunde (lisans/adet) direkt carpilir. ---
-    hizmet_mi_hesap = urun.startswith("SRV-")
+    # 'sure_bazli' acikca verilmisse onu esas al (manuel tarih girisinde
+    # oldugu gibi); verilmemisse urun koduna gore karar ver (AI akisi).
+    if "sure_bazli" in args:
+        hizmet_mi_hesap = bool(args.get("sure_bazli"))
+    else:
+        hizmet_mi_hesap = urun.startswith("SRV-")
     if hizmet_mi_hesap:
         # taban_fiyat burada YILLIK kabul edilir; miktar = ay sayisi.
         toplam_oncesi = round(taban_fiyat * (miktar / 12.0), 2)
@@ -1708,7 +1713,10 @@ def hizmet_fiyat_hesapla(musteri, urun, ay_sayisi):
     ay_sayisi = max(ay_sayisi, 1)
 
     try:
-        ham = _tool_fiyat_onerisi({"musteri": musteri, "urun": urun, "miktar": ay_sayisi})
+        # tarih girisiyle cagrildigi icin HER ZAMAN sure bazli (yillik/12*ay) hesapla
+        ham = _tool_fiyat_onerisi({
+            "musteri": musteri, "urun": urun, "miktar": ay_sayisi, "sure_bazli": True,
+        })
         veri = json.loads(ham) if isinstance(ham, str) and ham.startswith("{") else {}
     except Exception:
         veri = {}
