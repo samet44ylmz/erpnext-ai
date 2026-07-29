@@ -1637,7 +1637,7 @@ def ask(question, context=None, gecmis=None):
 
             # form_doldur VEYA teklif_taslagi -- hangi arac olursa olsun,
             # sonuc bir form taslagi ise yakala
-            if name in ("form_doldur", "teklif_taslagi"):
+            if name in ("form_doldur", "teklif_taslagi", "fatura_taslagi"):
                 try:
                     parsed = json.loads(result)
                     if isinstance(parsed, dict) and parsed.get("_action") == "form_taslak":
