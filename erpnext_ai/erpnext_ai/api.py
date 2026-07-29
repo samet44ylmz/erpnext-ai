@@ -1807,7 +1807,7 @@ def kritik_stok_kontrol():
 
 
 @frappe.whitelist()
-def sozlesme_kontrolu():
+def sozlesme_kontrolu(sadece_acil=None):
     """
     Bitis tarihi yaklasan (60 gun icindeki) sozlesmeleri bulur, kademeli
     aciliyet (kritik <=7 gun, yakin <=30 gun, planla <=60 gun) belirler,
@@ -1905,6 +1905,12 @@ def sozlesme_kontrolu():
 
         liste.append(madde)
 
+    # sadece_acil verilmisse "planla" (60 gune kadar, henuz acil olmayan)
+    # kategorisini cikar -- bu, pop-up'ta sadece kritik+yakin gostermek icin.
+    # Kalici "Teklif Uyarilari" sayfasi bu parametreyi VERMEZ, hepsini gorur.
+    if sadece_acil:
+        liste = [l for l in liste if l["durum"] in ("kritik", "yakin")]
+
     if not liste:
         return {"var": False, "mesaj": "", "sozlesmeler": []}
 
@@ -1944,33 +1950,37 @@ def sozlesme_kontrolu():
         adlar = ", ".join(f"{l['taraf']} ({l['kalan_gun']} gun)" for l in liste)
         mesaj = f"Yaklasan sozlesme yenilemeleri: {adlar}."
 
-    try:
-        kullanici = frappe.session.user
-        ilk_isimler = ", ".join(l["taraf"] for l in liste[:3])
-        subject = f"Sozlesme Uyarisi: {ilk_isimler} — yenileme yaklasiyor"
-        mevcut = frappe.get_all(
-            "Notification Log",
-            filters={"for_user": kullanici, "subject": subject, "read": 0},
-            limit_page_length=1,
-        )
-        if not mevcut:
-            log = frappe.new_doc("Notification Log")
-            log.subject = subject
-            log.email_content = mesaj
-            log.for_user = kullanici
-            log.type = "Alert"
-            try:
-                meta2 = frappe.get_meta("Notification Log")
-                if meta2.get_field("link"):
-                    log.link = "/app/contract"
-                else:
-                    log.document_type = "Contract"
-            except Exception:
-                pass
-            log.insert(ignore_permissions=True)
-            frappe.db.commit()
-    except Exception:
-        pass
+    # Cana kayit SADECE pop-up tetiklendiginde (sadece_acil=True) dusurulur.
+    # Kalici sayfa (sadece_acil verilmeden cagrilir) cana ayrica yazmaz,
+    # yoksa her ziyarette farkli basliklarla tekrarlanan kayit olusurdu.
+    if sadece_acil:
+        try:
+            kullanici = frappe.session.user
+            ilk_isimler = ", ".join(l["taraf"] for l in liste[:3])
+            subject = f"Sozlesme Uyarisi: {ilk_isimler} — yenileme yaklasiyor"
+            mevcut = frappe.get_all(
+                "Notification Log",
+                filters={"for_user": kullanici, "subject": subject, "read": 0},
+                limit_page_length=1,
+            )
+            if not mevcut:
+                log = frappe.new_doc("Notification Log")
+                log.subject = subject
+                log.email_content = mesaj
+                log.for_user = kullanici
+                log.type = "Alert"
+                try:
+                    meta2 = frappe.get_meta("Notification Log")
+                    if meta2.get_field("link"):
+                        log.link = "/app/contract"
+                    else:
+                        log.document_type = "Contract"
+                except Exception:
+                    pass
+                log.insert(ignore_permissions=True)
+                frappe.db.commit()
+        except Exception:
+            pass
 
     return {"var": True, "mesaj": mesaj, "sozlesmeler": liste}
 
