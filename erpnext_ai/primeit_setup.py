@@ -583,7 +583,7 @@ def test_verisi_50_olustur():
             standart = _standart_fiyat(urun_kodu) or 50000
             varyasyon = random.uniform(0.8, 1.15)
             eski_fiyat = round(standart * varyasyon, 2)
-            gun_once = random.randint(30, 300)
+            gun_once = random.randint(30, 180)  # 2026 mali yili icinde kalir
             fatura_tarihi = bugun - timedelta(days=gun_once)
 
             si = frappe.new_doc("Sales Invoice")
@@ -643,3 +643,82 @@ def test_verisi_50_olustur():
         "fatura_hata": fatura_hata, "sozlesme_hata": sozlesme_hata,
         "dagilim": ozet,
     }
+
+
+def eksik_faturalari_tamamla():
+    """
+    test_verisi_50_olustur() calisirken mali yil disina tasan tarihler
+    yuzunden olusturulamayan faturalari GUVENLI tarih araligiyla
+    (30-180 gun once, hep 2026 icinde kalir) tamamlar. Sozlesmelere
+    dokunmaz, sadece eksik faturalari ekler.
+    """
+    import random
+    import frappe.utils
+    from datetime import timedelta
+    from erpnext_ai.erpnext_ai.api import _standart_fiyat
+
+    random.seed(42)
+    sirket = _sirket()
+    if not sirket:
+        print("Sirket bulunamadi.")
+        return
+
+    tum_musteriler = [f for liste in MUSTERI_GRUPLARI.values() for f in liste]
+    tum_urunler = [kod for (kod, ad, tur, fiyat) in URUNLER]
+    musteri_sirali = tum_musteriler[:]
+    random.shuffle(musteri_sirali)
+
+    ciftler = []
+    for i in range(50):
+        musteri = musteri_sirali[i % len(musteri_sirali)]
+        urun = tum_urunler[i % len(tum_urunler)]
+        ciftler.append((musteri, urun))
+
+    bugun = frappe.utils.getdate()
+    olusan, atlanan, hata = 0, 0, 0
+
+    for musteri, urun_kodu in ciftler:
+        # bu cift icin zaten bir fatura var mi kontrol et
+        try:
+            kalemler = frappe.get_all(
+                "Sales Invoice Item", filters={"item_code": urun_kodu},
+                fields=["parent"], limit_page_length=200,
+            )
+            parent_adlar = list({k["parent"] for k in kalemler})
+            varmi = frappe.get_all(
+                "Sales Invoice",
+                filters={"name": ["in", parent_adlar], "customer": musteri, "docstatus": 1},
+                limit_page_length=1,
+            ) if parent_adlar else []
+        except Exception:
+            varmi = []
+
+        if varmi:
+            atlanan += 1
+            continue
+
+        try:
+            standart = _standart_fiyat(urun_kodu) or 50000
+            varyasyon = random.uniform(0.8, 1.15)
+            eski_fiyat = round(standart * varyasyon, 2)
+            gun_once = random.randint(30, 180)  # HEP 2026 icinde kalir
+            fatura_tarihi = bugun - timedelta(days=gun_once)
+
+            si = frappe.new_doc("Sales Invoice")
+            si.customer = musteri
+            si.company = sirket
+            si.set_posting_time = 1
+            si.posting_date = fatura_tarihi
+            si.due_date = fatura_tarihi
+            si.update_stock = 0
+            si.append("items", {"item_code": urun_kodu, "qty": 1, "rate": eski_fiyat})
+            si.insert(ignore_permissions=True)
+            si.submit()
+            frappe.db.commit()
+            olusan += 1
+        except Exception as e:
+            hata += 1
+            print(f"  Fatura olusturulamadi ({musteri}/{urun_kodu}): {str(e)[:150]}")
+
+    print(f"\nTamamlandi: {olusan} yeni fatura, {atlanan} zaten vardi, {hata} hata.")
+    return {"olusan": olusan, "atlanan": atlanan, "hata": hata}
