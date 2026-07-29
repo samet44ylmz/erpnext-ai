@@ -35,6 +35,7 @@ frappe.pages["teklif-uyarilari"].on_page_load = function (wrapper) {
 		);
 		frappe.call({
 			method: "erpnext_ai.erpnext_ai.api.sozlesme_kontrolu",
+			args: { hafif: 1 }, // Groq ozet metnini atla, hizli yuklensin
 			callback: function (r) {
 				cizVeGoster((r && r.message) || {});
 			},
@@ -78,7 +79,12 @@ frappe.pages["teklif-uyarilari"].on_page_load = function (wrapper) {
 				  " TL</span>"
 				: '<span class="eai-ss-fiyat eai-ss-fiyat-yok">—</span>';
 
+			var gerekceHtml = s.yenileme_gerekce
+				? '<div class="eai-ss-gerekce">' + kacisla(s.yenileme_gerekce) + "</div>"
+				: "";
+
 			html +=
+				'<div class="eai-ss-entry">' +
 				'<div class="eai-ss-satir">' +
 				'<span class="eai-rozet ' + rozetSinif + ' eai-ss-rozet">' + rozetMetin + "</span>" +
 				'<div class="eai-ss-orta">' +
@@ -92,7 +98,7 @@ frappe.pages["teklif-uyarilari"].on_page_load = function (wrapper) {
 			if (s.yenileme_fiyat) {
 				html += '<button class="eai-ss-btn" data-idx="' + idx + '">Teklif</button>';
 			}
-			html += "</div>";
+			html += "</div>" + gerekceHtml + "</div>";
 		});
 		html += "</div>";
 
