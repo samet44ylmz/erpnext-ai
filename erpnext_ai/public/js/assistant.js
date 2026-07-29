@@ -73,11 +73,11 @@
 				Object.keys(alanlar).forEach((k) => {
 					try {
 						if (k === "items" && Array.isArray(alanlar[k])) {
-							// satir tablosu (urun kalemleri) -- add_child ile eklenir.
-							// ERPNext item_code yazilinca kendi fiyatini otomatik
-							// getirir; bizim onerdigimiz fiyati asagida GEC ama
-							// KESIN olarak tekrar yazacagiz.
-							alanlar[k].forEach((satir) => {
+							// satir tablosu (urun kalemleri).
+							// ERPNext yeni formda otomatik BOS bir satir acar --
+							// once onu kullaniriz, yoksa yeni satir ekleriz.
+							// Boylece basta bos satir kalmaz.
+							alanlar[k].forEach((satir, sIdx) => {
 								const eklenecek = {
 									item_code: satir.item_code,
 									qty: satir.qty,
@@ -90,7 +90,19 @@
 								if (satir.hizmet_bitis) {
 									eklenecek.custom_hizmet_bitis = satir.hizmet_bitis;
 								}
-								const row = cur_frm.add_child("items", eklenecek);
+
+								const mevcut = cur_frm.doc.items || [];
+								// ilk satir icin: bos (item_code'u olmayan) bir satir
+								// varsa onu doldur; yoksa yeni ekle.
+								let row = null;
+								if (sIdx === 0 && mevcut.length && !mevcut[0].item_code) {
+									row = mevcut[0];
+									Object.keys(eklenecek).forEach(function (alanAdi) {
+										row[alanAdi] = eklenecek[alanAdi];
+									});
+								} else {
+									row = cur_frm.add_child("items", eklenecek);
+								}
 								if (satir.rate != null || satir.aciklama != null) {
 									eklenenSatirlar.push({
 										cdt: row.doctype,
@@ -103,8 +115,14 @@
 							cur_frm.refresh_field("items");
 							dolan++;
 						} else if (cur_frm.get_field(k)) {
-							cur_frm.set_value(k, alanlar[k]);
-							dolan++;
+							// Tevkifat kodunu SIMDI yazmiyoruz -- Client Script bu
+							// alan degisince tetiklenip KDV uzerinden tutar
+							// hesapliyor. Fiyatlar henuz oturmadigi icin simdi
+							// yazarsak 0 uzerinden hesaplar. Asagida geciktiriyoruz.
+							if (k !== "custom_tevkifat_kodu") {
+								cur_frm.set_value(k, alanlar[k]);
+								dolan++;
+							}
 						}
 					} catch (e) {
 						// bu alan doldurulamadi, digerlerine devam
@@ -125,6 +143,22 @@
 						});
 						cur_frm.refresh_field("items");
 					}, 900);
+				}
+
+				// Tevkifat kodu EN SON yazilir: fiyatlar ve KDV oturduktan sonra.
+				// Kod alani degisince sistemdeki "Fatura Tevkifat Hesaplama"
+				// Client Script'i tetiklenir; o da gercek KDV uzerinden tutari
+				// hesaplar VE vergi tablosuna eksi satiri ekler. Erken yazsaydik
+				// KDV henuz 0 oldugu icin tevkifat da 0 cikardi.
+				if (alanlar["custom_tevkifat_kodu"]) {
+					setTimeout(() => {
+						try {
+							cur_frm.set_value(
+								"custom_tevkifat_kodu",
+								alanlar["custom_tevkifat_kodu"]
+							);
+						} catch (e) {}
+					}, 1800);
 				}
 				frappe.show_alert(
 					{
