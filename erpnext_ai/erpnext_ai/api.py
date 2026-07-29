@@ -532,23 +532,6 @@ def _evds_yuzde_degisim(seri, eski_tarih):
     return (bugun - eski) / eski * 100.0
 
 
-def _miktar_indirim_yuzdesi(adet):
-    """
-    Bu siparisteki URUN ADEDINE gore kademeli toptan indirim (%).
-    Kademe adede gore belirlenir; indirim TUTARI ise toplam bakiye
-    uzerinden uygulanir (asagida fiyat_onerisi icinde).
-    """
-    if adet >= 50:
-        return 10
-    if adet >= 20:
-        return 6
-    if adet >= 10:
-        return 4
-    if adet >= 5:
-        return 2
-    return 0
-
-
 SEKTOR_FIYAT_AYARI = {
     # yuzde: pozitif = zam, negatif = indirim (taban fiyata uygulanir)
     "Finans": 8,
@@ -863,8 +846,7 @@ def _tool_fiyat_onerisi(args):
 
     ara_toplam = round(toplam_oncesi * (1 - sadakat_yuzde / 100.0), 2) if sadakat_yuzde else toplam_oncesi
 
-    miktar_yuzde = _miktar_indirim_yuzdesi(miktar)
-    toplam_nihai = round(ara_toplam * (1 - miktar_yuzde / 100.0), 2) if miktar_yuzde else ara_toplam
+    toplam_nihai = ara_toplam  # toptan/buyuk siparis indirimi KALDIRILDI
 
     onerilen_birim_fiyat = round(toplam_nihai / miktar, 2) if miktar else toplam_nihai
 
@@ -879,7 +861,6 @@ def _tool_fiyat_onerisi(args):
         "toplam_oncesi_indirim": toplam_oncesi,
         "sadakat_cirosu_12ay": round(ciro_12ay, 2),
         "sadakat_indirim_yuzde": sadakat_yuzde,
-        "buyuk_siparis_indirim_yuzde": miktar_yuzde,
         "toplam_nihai": toplam_nihai,
         "onerilen_fiyat": onerilen_birim_fiyat,
     }
@@ -929,6 +910,7 @@ def _tool_teklif_taslagi(args):
         fiyat_data = {}
 
     birim_fiyat = fiyat_data.get("onerilen_fiyat")
+    toplam_fiyat = fiyat_data.get("toplam_nihai")
 
     if not birim_fiyat:
         return json.dumps({
@@ -937,22 +919,42 @@ def _tool_teklif_taslagi(args):
                    "Birim fiyati siz belirtmelisiniz.",
         }, ensure_ascii=False, default=str)
 
+    hizmet_mi = urun_cozulmus.startswith("SRV-")
+
+    if hizmet_mi:
+        # Hizmette adet HER ZAMAN 1; sure GERCEK TARIH ALANLARINA yazilir
+        # (custom_hizmet_baslangic / custom_hizmet_bitis), fiyat TOPLAM'dir.
+        bugun = frappe.utils.getdate()
+        bitis = frappe.utils.add_months(bugun, miktar)
+        urun_adi = frappe.db.get_value("Item", urun_cozulmus, "item_name") or urun_cozulmus
+        aciklama = f"{urun_adi} Hizmeti — {miktar} Ay"
+        satir = {
+            "item_code": urun_cozulmus,
+            "qty": 1,
+            "rate": toplam_fiyat,
+            "aciklama": aciklama,
+            "hizmet_baslangic": bugun.isoformat(),
+            "hizmet_bitis": bitis.isoformat(),
+        }
+    else:
+        satir = {"item_code": urun_cozulmus, "qty": miktar, "rate": birim_fiyat}
+
     return json.dumps({
         "_action": "form_taslak",
         "doctype": "Quotation",
         "alanlar": {
             "quotation_to": tur,  # "Customer" veya "Lead"
             "party_name": musteri_cozulmus,
-            "items": [
-                {"item_code": urun_cozulmus, "qty": miktar, "rate": birim_fiyat},
-            ],
+            "items": [satir],
         },
         "ozet": {
             "musteri": musteri_cozulmus,
             "musteri_turu": tur,
             "urun": urun_cozulmus,
+            "hizmet_mi": hizmet_mi,
             "miktar": miktar,
             "birim_fiyat": birim_fiyat,
+            "toplam_fiyat": toplam_fiyat,
             "fiyat_kaynagi": fiyat_data,
         },
     }, ensure_ascii=False, default=str)
@@ -1182,18 +1184,25 @@ def _system_prompt(context=None):
         "tahmini fiyat 565 TL olurdu, ancak bu urunun guncel standart fiyati "
         "4.000 TL'ye guncellenmis; standart fiyat daha yuksek oldugu icin o "
         "esas alindi.'\n"
-        "- Fiyat hesabi ARTIK 2 indirim katmani icerir, TOPLAM SIPARIS "
-        "TUTARI uzerinden, ust uste (sirayla) uygulanir -- urun basi degil:\n"
-        "  1) 'sadakat_indirim_yuzde': musterinin son 12 aylik cirosuna gore "
-        "(sadece Customer'da olur, Lead'de yok).\n"
-        "  2) 'buyuk_siparis_indirim_yuzde': BU siparisteki URUN ADEDINE "
-        "gore kademe belirlenir (Customer VE Lead'de de olur), ama indirim "
-        "TUTARI toplam bakiye uzerinden uygulanir, urun basi degil.\n"
-        "- Ikisi de varsa SIRAYLA uygulandigini belirt, ornek: 'Toplam tutar "
-        "40.000 TL. Once %5 sadakat indirimi, sonra bu siparisin buyuklugune "
-        "gore %4 daha indirim uygulandi; nihai toplam 36.480 TL, adet basi "
-        "3.648 TL.' Miktar belirtilmediyse buyuk siparis indirimi hesaba "
-        "katilamayabilir, bunu belirt.\n"
+        "- MIKTAR ANLAMI urun koduna gore degisir: kod 'SRV-' ile "
+        "basliyorsa (hizmet -- Veritabani Yonetimi, Sistem Yonetimi vb.) "
+        "miktar AY SAYISIDIR (orn: '6 aylik hizmet'). Kod 'PRM-' ile "
+        "basliyorsa (urun -- PrimeON, DbRunner vb.) miktar LISANS/ADET "
+        "SAYISIDIR (orn: '50 lisans'). Miktar sorarken buna gore sor: "
+        "hizmette 'kac ay/yil', urunde 'kac adet/lisans' diye sor.\n"
+        "- HIZMET taslaklarinda ('hizmet_mi': true) teklif satirinda adet "
+        "HER ZAMAN 1'dir; hizmet suresi 'Hizmet Baslangic'/'Hizmet Bitis' "
+        "GERCEK TARIH ALANLARINA yazilir (metin degil), fiyat da o surenin "
+        "TOPLAM tutaridir (aylik degil). Bunu anlatirken 'X ay icin toplam "
+        "Y TL, Z tarihinden W tarihine kadar' de, '1 adet' ifadesini one "
+        "cikarma.\n"
+        "- Fiyat hesabina bir SADAKAT INDIRIMI katmani daha eklenir, "
+        "TOPLAM SIPARIS TUTARI uzerinden (urun basi degil): "
+        "'sadakat_indirim_yuzde' musterinin son 12 aylik cirosuna gore "
+        "belirlenir (sadece Customer'da olur, Lead'de yok). Ornek: 'Bu "
+        "musteri son 12 ayda 180.000 TL ciro yapmis, bu nedenle %8 sadakat "
+        "indirimi uygulandi; toplam tutar 40.000 TL yerine 36.800 TL oldu.' "
+        "(Buyuk siparis/toptan indirimi ARTIK YOK -- kaldirildi, bahsetme.)\n"
         "- Gecmis alim yoksa: standart fiyat kullanildigini belirt.\n"
         "- '_action': 'fiyat_bulunamadi' donerse, kullaniciya birim fiyati "
         "kendisinin belirtmesi gerektigini soyle.\n"
