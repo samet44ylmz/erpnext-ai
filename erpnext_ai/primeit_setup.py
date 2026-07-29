@@ -489,3 +489,35 @@ def hizmet_tarih_alanlari_olustur():
     frappe.clear_cache()
     print(f"\n{olusan} yeni alan olusturuldu (toplam {len(hedef_doctype_lar)*len(alanlar)} beklenen).")
     return {"olusan": olusan}
+
+
+def sozlesme_urun_alani_olustur():
+    """
+    Contract (Sozlesme) doctype'ina 'Ilgili Urun/Hizmet' (Item baglantili)
+    ozel alanini ekler. Boylece sozlesme hangi urun/hizmet icin yapilmis
+    bilinir, bitince dogru urunun fiyatiyla yenileme teklifi hesaplanabilir.
+    """
+    dt = "Contract"
+    fieldname = "custom_ilgili_urun"
+
+    if frappe.db.exists("Custom Field", {"dt": dt, "fieldname": fieldname}):
+        print("Alan zaten mevcut, islem yapilmadi.")
+        return {"olusan": 0}
+
+    try:
+        cf = frappe.new_doc("Custom Field")
+        cf.dt = dt
+        cf.fieldname = fieldname
+        cf.label = "İlgili Ürün/Hizmet"
+        cf.fieldtype = "Link"
+        cf.options = "Item"
+        cf.insert_after = "party_name"
+        cf.in_list_view = 1
+        cf.insert(ignore_permissions=True)
+        frappe.db.commit()
+        frappe.clear_cache()
+        print("Alan olusturuldu: Contract.custom_ilgili_urun")
+        return {"olusan": 1}
+    except Exception as e:
+        print(f"Alan olusturulamadi: {str(e)[:200]}")
+        return {"olusan": 0}
