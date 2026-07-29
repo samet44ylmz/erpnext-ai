@@ -1046,7 +1046,7 @@ def _tool_fatura_taslagi(args):
             "kdv_dahil": kdv_dahil,
             "tevkifatli": tevkifatli,
             "tevkifat_bilgi": tevkifat_bilgi,
-            "fiyat_kaynagi": fiyat_data,
+            "fiyat_kaynagi": _fiyat_ozet_sadelestir(fiyat_data),
         },
     }, ensure_ascii=False, default=str)
 
@@ -1140,7 +1140,7 @@ def _tool_teklif_taslagi(args):
             "miktar": miktar,
             "birim_fiyat": birim_fiyat,
             "toplam_fiyat": toplam_fiyat,
-            "fiyat_kaynagi": fiyat_data,
+            "fiyat_kaynagi": _fiyat_ozet_sadelestir(fiyat_data),
         },
     }, ensure_ascii=False, default=str)
 
@@ -1804,6 +1804,39 @@ def kritik_stok_kontrol():
         "urun_sayisi": len(esik_alti),
         "urunler": detaylar,
     }
+
+
+def _fiyat_ozet_sadelestir(fiyat_data):
+    """
+    fiyat_onerisi'nin TAM ciktisi cok kalabalik (tekrarli alanlar icerir)
+    ve Groq'a geri gonderilince token siniri asilmasina yol aciyordu.
+    Bu fonksiyon sadece AI'in aciklama yapmak icin ihtiyaci olan alanlari
+    (tekrarsiz) dondurur -- token kullanimini ciddi dusurur.
+    """
+    if not fiyat_data or not isinstance(fiyat_data, dict):
+        return {}
+
+    sade = {
+        "gecmis_var": fiyat_data.get("gecmis_var"),
+        "musteri_turu": fiyat_data.get("musteri_turu"),
+        "sektor_grubu": fiyat_data.get("sektor_grubu"),
+        "sektor_ayari_yuzde": fiyat_data.get("sektor_ayari_yuzde"),
+        "sadakat_indirim_yuzde": fiyat_data.get("sadakat_indirim_yuzde"),
+        "kullanilan_faktor": fiyat_data.get("kullanilan_faktor"),
+        "toplam_nihai": fiyat_data.get("toplam_nihai"),
+    }
+    if fiyat_data.get("gecmis_var"):
+        sade["eski_fiyat"] = fiyat_data.get("eski_fiyat")
+        sade["eski_tarih"] = fiyat_data.get("eski_tarih")
+        if fiyat_data.get("enflasyon_yuzde") is not None:
+            sade["enflasyon_yuzde"] = fiyat_data.get("enflasyon_yuzde")
+        if fiyat_data.get("kur_yuzde") is not None:
+            sade["kur_yuzde"] = fiyat_data.get("kur_yuzde")
+    else:
+        sade["standart_fiyat"] = fiyat_data.get("standart_fiyat")
+
+    # None olan alanlari at, daha da kucultsun
+    return {k: v for k, v in sade.items() if v is not None}
 
 
 def _yenileme_gerekce_metni(fiyat_data):
