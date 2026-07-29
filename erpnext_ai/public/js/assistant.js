@@ -657,6 +657,75 @@
 		fetch_timesheet_proje_gizle();
 	}
 
+	// ----------------------------------------------------------
+	// Hizmet suresi (tarih) girilince fiyati OTOMATIK hesaplar.
+	// Sadece SRV- ile baslayan (hizmet) urunlerde calisir.
+	// AI/Groq cagirmaz, dogrudan fiyat motorunu calistirir (hizli).
+	// ----------------------------------------------------------
+	function ay_farki_hesapla(baslangic_str, bitis_str) {
+		try {
+			const b1 = frappe.datetime.str_to_obj(baslangic_str);
+			const b2 = frappe.datetime.str_to_obj(bitis_str);
+			const ay =
+				(b2.getFullYear() - b1.getFullYear()) * 12 +
+				(b2.getMonth() - b1.getMonth());
+			return Math.max(ay, 1);
+		} catch (e) {
+			return 1;
+		}
+	}
+
+	function hizmet_fiyat_guncelle(frm, cdt, cdn) {
+		const row = locals[cdt] && locals[cdt][cdn];
+		if (!row || !row.item_code) return;
+		if (row.item_code.indexOf("SRV-") !== 0) return; // sadece hizmetlerde
+		if (!row.custom_hizmet_baslangic || !row.custom_hizmet_bitis) return;
+
+		const musteri = frm.doc.customer || frm.doc.party_name;
+		if (!musteri) {
+			frappe.show_alert({
+				message: __("Fiyat hesaplamak icin once musteriyi secin."),
+				indicator: "orange",
+			});
+			return;
+		}
+
+		const ay = ay_farki_hesapla(row.custom_hizmet_baslangic, row.custom_hizmet_bitis);
+
+		frappe.call({
+			method: "erpnext_ai.erpnext_ai.api.hizmet_fiyat_hesapla",
+			args: { musteri: musteri, urun: row.item_code, ay_sayisi: ay },
+			callback: function (r) {
+				const sonuc = (r && r.message) || {};
+				if (sonuc.toplam != null) {
+					frappe.model.set_value(cdt, cdn, "qty", 1);
+					frappe.model.set_value(cdt, cdn, "rate", sonuc.toplam);
+					frappe.show_alert({
+						message: __(
+							"{0} ay icin fiyat guncellendi: {1} TL",
+							[ay, sonuc.toplam]
+						),
+						indicator: "green",
+					});
+				}
+			},
+			error: function () {
+				// sessiz gec, kullanici elle fiyat girebilir
+			},
+		});
+	}
+
+	["Quotation Item", "Sales Order Item", "Sales Invoice Item"].forEach(function (dt) {
+		frappe.ui.form.on(dt, {
+			custom_hizmet_baslangic: function (frm, cdt, cdn) {
+				hizmet_fiyat_guncelle(frm, cdt, cdn);
+			},
+			custom_hizmet_bitis: function (frm, cdt, cdn) {
+				hizmet_fiyat_guncelle(frm, cdt, cdn);
+			},
+		});
+	});
+
 	if (document.readyState === "loading") {
 		document.addEventListener("DOMContentLoaded", () => setTimeout(baslat, 1500));
 	} else {
