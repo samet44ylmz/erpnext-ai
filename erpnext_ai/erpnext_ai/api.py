@@ -1806,8 +1806,67 @@ def kritik_stok_kontrol():
     }
 
 
+def _yenileme_gerekce_metni(fiyat_data):
+    """
+    Fiyat hesaplama zincirini (taban fiyat + sektor + sadakat) okunakli,
+    maddeler halinde bir aciklamaya cevirir. Groq/AI KULLANMAZ -- sadece
+    zaten hesaplanmis sayilardan cumle kurar, bu yuzden hizlidir.
+    """
+    if not fiyat_data:
+        return ""
+
+    satirlar = []
+
+    if fiyat_data.get("gecmis_var"):
+        eski_fiyat = fiyat_data.get("eski_fiyat")
+        eski_tarih = fiyat_data.get("eski_tarih")
+        satirlar.append(f"Gecmis alim: {eski_tarih} tarihinde {eski_fiyat:,.0f} TL.".replace(",", "."))
+        enf = fiyat_data.get("enflasyon_yuzde")
+        kur = fiyat_data.get("kur_yuzde")
+        if enf is not None or kur is not None:
+            parcalar = []
+            if enf is not None:
+                parcalar.append(f"enflasyon %{enf:.1f}")
+            if kur is not None:
+                parcalar.append(f"dolar kuru %{kur:.1f}")
+            satirlar.append("Bu tarihten bugune " + " ve ".join(parcalar) + " degisti.")
+        guncel_standart = fiyat_data.get("guncel_standart_fiyat")
+        kullanilan = fiyat_data.get("kullanilan_faktor")
+        if kullanilan == "standart_fiyat_guncellemesi" and guncel_standart:
+            satirlar.append(
+                f"Guncel standart fiyat ({guncel_standart:,.0f} TL) enflasyon/kur "
+                "tahmininden yuksek oldugu icin o esas alindi.".replace(",", ".")
+            )
+    else:
+        standart = fiyat_data.get("standart_fiyat")
+        if standart:
+            satirlar.append(f"Gecmis alim yok, standart fiyat ({standart:,.0f} TL/yil) esas alindi.".replace(",", "."))
+
+    sektor_yuzde = fiyat_data.get("sektor_ayari_yuzde")
+    sektor_grubu = fiyat_data.get("sektor_grubu")
+    if sektor_yuzde:
+        yon = "prim" if sektor_yuzde > 0 else "indirim"
+        satirlar.append(f"{sektor_grubu} sektorunde oldugu icin %{abs(sektor_yuzde):.0f} {yon} uygulandi.")
+
+    sadakat_yuzde = fiyat_data.get("sadakat_indirim_yuzde")
+    ciro = fiyat_data.get("sadakat_cirosu_12ay")
+    if sadakat_yuzde:
+        satirlar.append(
+            f"Son 12 ayda {ciro:,.0f} TL ciro yapildigi icin ".replace(",", ".") +
+            f"%{sadakat_yuzde:.0f} sadakat indirimi uygulandi."
+        )
+    elif ciro is not None and ciro > 0:
+        satirlar.append(f"Son 12 ay ciro ({ciro:,.0f} TL) sadakat indirimi esigine ulasmadi.".replace(",", "."))
+
+    toplam = fiyat_data.get("toplam_nihai")
+    if toplam:
+        satirlar.append(f"Nihai toplam: {toplam:,.0f} TL.".replace(",", "."))
+
+    return " ".join(satirlar)
+
+
 @frappe.whitelist()
-def sozlesme_kontrolu(sadece_acil=None):
+def sozlesme_kontrolu(sadece_acil=None, hafif=None):
     """
     Bitis tarihi yaklasan (60 gun icindeki) sozlesmeleri bulur, kademeli
     aciliyet (kritik <=7 gun, yakin <=30 gun, planla <=60 gun) belirler,
@@ -1900,6 +1959,7 @@ def sozlesme_kontrolu(sadece_acil=None):
                 madde["yenileme_urun_adi"] = frappe.db.get_value("Item", urun_kodu, "item_name") or urun_kodu
                 madde["yenileme_fiyat"] = fiyat_data.get("toplam_nihai")
                 madde["yenileme_ay"] = 12
+                madde["yenileme_gerekce"] = _yenileme_gerekce_metni(fiyat_data)
             except Exception:
                 pass
 
@@ -1923,28 +1983,29 @@ def sozlesme_kontrolu(sadece_acil=None):
         ozet_satirlari.append(satir)
     veri = "\n".join(ozet_satirlari)
     mesaj = None
-    try:
-        messages = [
-            {"role": "system", "content": (
-                "Sen bir sozlesme/lisans takip asistanisin. Bitis tarihi "
-                "yaklasan sozlesmeler icin kisa, net bir Turkce uyari metni "
-                "yaz. MUTLAKA taraf adini belirt. Yenileme onerisi verilmisse "
-                "(urun + fiyat), bunu da 'en uygun teklif' olarak belirt. "
-                "En yakin bitecekten baslayarak anlat. 2-4 cumleyi gecme. "
-                "JSON veya teknik detay yazma, sadece dogal uyari metni."
-            )},
-            {"role": "user", "content": f"Yaklasan sozlesmeler:\n{veri}"},
-        ]
-        key = _groq_key()
-        if key:
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-            body = {"model": _groq_model(), "messages": messages, "temperature": 0.2}
-            r = requests.post(GROQ_URL, headers=headers, json=body, timeout=30)
-            data = r.json()
-            if "choices" in data:
-                mesaj = (data["choices"][0]["message"].get("content") or "").strip()
-    except Exception:
-        mesaj = None
+    if not hafif:  # 'hafif' (kalici sayfa) icin Groq'a hic gidilmez, hizli olsun
+        try:
+            messages = [
+                {"role": "system", "content": (
+                    "Sen bir sozlesme/lisans takip asistanisin. Bitis tarihi "
+                    "yaklasan sozlesmeler icin kisa, net bir Turkce uyari metni "
+                    "yaz. MUTLAKA taraf adini belirt. Yenileme onerisi verilmisse "
+                    "(urun + fiyat), bunu da 'en uygun teklif' olarak belirt. "
+                    "En yakin bitecekten baslayarak anlat. 2-4 cumleyi gecme. "
+                    "JSON veya teknik detay yazma, sadece dogal uyari metni."
+                )},
+                {"role": "user", "content": f"Yaklasan sozlesmeler:\n{veri}"},
+            ]
+            key = _groq_key()
+            if key:
+                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                body = {"model": _groq_model(), "messages": messages, "temperature": 0.2}
+                r = requests.post(GROQ_URL, headers=headers, json=body, timeout=30)
+                data = r.json()
+                if "choices" in data:
+                    mesaj = (data["choices"][0]["message"].get("content") or "").strip()
+        except Exception:
+            mesaj = None
 
     if not mesaj:
         adlar = ", ".join(f"{l['taraf']} ({l['kalan_gun']} gun)" for l in liste)
