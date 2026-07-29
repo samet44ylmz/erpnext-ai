@@ -290,7 +290,8 @@ def calisanlari_olustur():
             e.company = sirket
             e.date_of_joining = frappe.utils.today()
             e.status = "Active"
-            e.gender = "Erkek" if frappe.db.exists("Gender", "Erkek") else None
+            e.gender = "Male"
+            e.date_of_birth = "1990-01-01"  # placeholder, gercek tarihle guncellenebilir
             e.insert(ignore_permissions=True)
             frappe.db.commit()
             olusan += 1
