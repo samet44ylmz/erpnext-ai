@@ -1364,6 +1364,20 @@ def _system_prompt(context=None):
     )
 
 
+_TASLAK_IDDIA_KALIPLARI = (
+    "taslağı hazırladım", "taslagi hazirladim",
+    "taslak hazırladım", "taslak hazirladim",
+    "formu hazırladım", "formu hazirladim",
+    "form hazırladım", "form hazirladim",
+    "formu oluşturdum", "formu olusturdum",
+    "form oluşturdum", "form olusturdum",
+    "taslağı oluşturdum", "taslagi olusturdum",
+    "bu bir taslaktır", "bu bir taslaktir",
+    "taslaktır, gözden", "taslaktir, gozden",
+    "taslaktır, kaydedebilir", "taslaktir, kaydedebilir",
+)
+
+
 def _dogruluk_kontrolu(cevap, form_taslak):
     """
     AI, gercekte form_doldur cagirmadigi halde 'taslak hazirladim' derse
