@@ -521,3 +521,122 @@ def sozlesme_urun_alani_olustur():
     except Exception as e:
         print(f"Alan olusturulamadi: {str(e)[:200]}")
         return {"olusan": 0}
+
+
+def test_verisi_50_olustur():
+    """
+    50 (musteri, urun) cifti icin:
+      - Gecmis bir Satis Faturasi (fiyat motoru gecmis fiyat/enflasyon/
+        sadakat hesaplayabilsin diye)
+      - O urune bagli bir Sozlesme (Contract), bitis tarihleri COK CESITLI
+        dagitilir: bazilari kritik (<=7 gun), bazilari yakin (<=30 gun),
+        bazilari planlanmali (<=60 gun), bazilari uzak (>60 gun, uyari
+        vermez, sadece arka plan verisi).
+    Boylece hem fiyatlandirma hem sozlesme uyarisi/yenileme sistemi genis
+    bir test setiyle denenebilir.
+    """
+    import random
+    import frappe.utils
+    from datetime import timedelta
+
+    random.seed(42)
+    sirket = _sirket()
+    if not sirket:
+        print("Sirket bulunamadi.")
+        return
+
+    tum_musteriler = [f for liste in MUSTERI_GRUPLARI.values() for f in liste]
+    tum_urunler = [kod for (kod, ad, tur, fiyat) in URUNLER]
+
+    if len(tum_musteriler) < 50:
+        print(f"UYARI: sadece {len(tum_musteriler)} musteri var, bazilari tekrar kullanilacak.")
+
+    # 50 benzersiz (musteri, urun) cifti — musterileri karistirip sirayla urun ata
+    musteri_sirali = tum_musteriler[:]
+    random.shuffle(musteri_sirali)
+    ciftler = []
+    for i in range(50):
+        musteri = musteri_sirali[i % len(musteri_sirali)]
+        urun = tum_urunler[i % len(tum_urunler)]
+        ciftler.append((musteri, urun))
+
+    # bitis tarihi dagitimi: 10 kritik, 10 yakin, 10 planla, 20 uzak
+    bitis_gun_havuzu = (
+        [random.randint(1, 7) for _ in range(10)] +
+        [random.randint(8, 30) for _ in range(10)] +
+        [random.randint(31, 60) for _ in range(10)] +
+        [random.randint(61, 365) for _ in range(20)]
+    )
+    random.shuffle(bitis_gun_havuzu)
+
+    bugun = frappe.utils.getdate()
+    fatura_sayisi, sozlesme_sayisi = 0, 0
+    fatura_hata, sozlesme_hata = 0, 0
+
+    # bitis tarihi dagilim ozeti icin sayac
+    ozet = {"kritik": 0, "yakin": 0, "planla": 0, "uzak": 0}
+
+    for i, (musteri, urun_kodu) in enumerate(ciftler):
+        # --- Gecmis Satis Faturasi ---
+        try:
+            standart = _standart_fiyat(urun_kodu) or 50000
+            varyasyon = random.uniform(0.8, 1.15)
+            eski_fiyat = round(standart * varyasyon, 2)
+            gun_once = random.randint(30, 300)
+            fatura_tarihi = bugun - timedelta(days=gun_once)
+
+            si = frappe.new_doc("Sales Invoice")
+            si.customer = musteri
+            si.company = sirket
+            si.set_posting_time = 1
+            si.posting_date = fatura_tarihi
+            si.due_date = fatura_tarihi
+            si.update_stock = 0
+            si.append("items", {"item_code": urun_kodu, "qty": 1, "rate": eski_fiyat})
+            si.insert(ignore_permissions=True)
+            si.submit()
+            frappe.db.commit()
+            fatura_sayisi += 1
+        except Exception as e:
+            fatura_hata += 1
+            if fatura_hata <= 3:
+                print(f"  Fatura olusturulamadi ({musteri}/{urun_kodu}): {str(e)[:150]}")
+
+        # --- Sozlesme (Contract) ---
+        try:
+            bitis_gun = bitis_gun_havuzu[i]
+            if bitis_gun <= 7:
+                ozet["kritik"] += 1
+            elif bitis_gun <= 30:
+                ozet["yakin"] += 1
+            elif bitis_gun <= 60:
+                ozet["planla"] += 1
+            else:
+                ozet["uzak"] += 1
+
+            bitis_tarihi = bugun + timedelta(days=bitis_gun)
+            baslangic_tarihi = bugun - timedelta(days=365 - bitis_gun)
+
+            c = frappe.new_doc("Contract")
+            c.party_type = "Customer"
+            c.party_name = musteri
+            c.custom_ilgili_urun = urun_kodu
+            c.start_date = baslangic_tarihi
+            c.end_date = bitis_tarihi
+            c.is_signed = 1
+            c.insert(ignore_permissions=True)
+            frappe.db.commit()
+            sozlesme_sayisi += 1
+        except Exception as e:
+            sozlesme_hata += 1
+            if sozlesme_hata <= 3:
+                print(f"  Sozlesme olusturulamadi ({musteri}/{urun_kodu}): {str(e)[:150]}")
+
+    print(f"\nToplam: {fatura_sayisi} fatura, {sozlesme_sayisi} sozlesme olusturuldu.")
+    print(f"Hatalar: {fatura_hata} fatura, {sozlesme_hata} sozlesme.")
+    print(f"Bitis tarihi dagilimi: {ozet}")
+    return {
+        "fatura": fatura_sayisi, "sozlesme": sozlesme_sayisi,
+        "fatura_hata": fatura_hata, "sozlesme_hata": sozlesme_hata,
+        "dagilim": ozet,
+    }
