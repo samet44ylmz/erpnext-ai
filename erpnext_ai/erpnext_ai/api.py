@@ -708,10 +708,14 @@ def _tool_fiyat_onerisi(args):
       1) Taban fiyat: kayitli musterinin gecmis alim fiyati (enflasyon/kur ile
          guncellenmis) VEYA guncel standart fiyat -- HANGISI YUKSEKSE (Lead
          icin dogrudan standart fiyat, gecmis olamayacagi icin).
-      2) TOPLAM tutar (taban fiyat x miktar) uzerinden, SIRAYLA (ust uste):
-         a) Sadakat indirimi -- musterinin son 12 ayki cirosuna gore (Lead'de yok)
-         b) Buyuk siparis indirimi -- BU siparisin toplam tutarina gore (herkeste var)
-      3) Nihai toplam / miktar = onerilen birim fiyat.
+      2) TOPLAM tutar:
+         - HIZMET (SRV-*): taban fiyat YILLIKTIR. Miktar = AY SAYISI.
+           toplam = taban_fiyat * (miktar / 12).
+         - URUN (PRM-*): taban fiyat BIRIM fiyattir. Miktar = ADET/LISANS.
+           toplam = taban_fiyat * miktar.
+      3) Bu toplam uzerinden sadakat indirimi (Customer'da, son 12 ay cirosuna
+         gore; Lead'de yok).
+      4) Nihai toplam / miktar = onerilen birim fiyat.
 
     Indirimler URUN BASI degil, SIPARISIN TOPLAM BAKIYESI uzerinden hesaplanir.
     SALT-OKUNUR: hicbir kayit olusturmaz/degistirmez.
@@ -834,8 +838,16 @@ def _tool_fiyat_onerisi(args):
     if sektor_yuzde:
         taban_fiyat = round(taban_fiyat * (1 + sektor_yuzde / 100.0), 2)
 
-    # --- 2) INDIRIMLER: TOPLAM tutar uzerinden, ust uste ---
-    toplam_oncesi = round(taban_fiyat * miktar, 2)
+    # --- 2) TOPLAM tutar: hizmette YILLIK fiyattan ORANLI hesaplanir,
+    # urunde (lisans/adet) direkt carpilir. ---
+    hizmet_mi_hesap = urun.startswith("SRV-")
+    if hizmet_mi_hesap:
+        # taban_fiyat burada YILLIK kabul edilir; miktar = ay sayisi.
+        toplam_oncesi = round(taban_fiyat * (miktar / 12.0), 2)
+    else:
+        toplam_oncesi = round(taban_fiyat * miktar, 2)
+
+    # --- 3) INDIRIMLER: TOPLAM tutar uzerinden, ust uste ---
 
     if tur == "Customer":
         ciro_12ay = _musteri_son_12ay_cirosu(musteri)
@@ -1196,10 +1208,13 @@ def _system_prompt(context=None):
         "yanlis sonuc uretir.\n"
         "- MIKTAR ANLAMI urun koduna gore degisir: kod 'SRV-' ile "
         "basliyorsa (hizmet -- Veritabani Yonetimi, Sistem Yonetimi vb.) "
-        "miktar AY SAYISIDIR (orn: '6 aylik hizmet'). Kod 'PRM-' ile "
+        "miktar AY SAYISIDIR (orn: '6 aylik hizmet'). Hizmetlerde STANDART "
+        "FIYAT YILLIKTIR; toplam tutar = yillik_fiyat x (ay/12) seklinde "
+        "ORANTILI hesaplanir (6 ay = yillik fiyatin yarisi). Kod 'PRM-' ile "
         "basliyorsa (urun -- PrimeON, DbRunner vb.) miktar LISANS/ADET "
-        "SAYISIDIR (orn: '50 lisans'). Miktar sorarken buna gore sor: "
-        "hizmette 'kac ay/yil', urunde 'kac adet/lisans' diye sor.\n"
+        "SAYISIDIR (orn: '50 lisans'), direkt carpilir, oran yoktur. "
+        "Miktar sorarken buna gore sor: hizmette 'kac ay/yil', urunde "
+        "'kac adet/lisans' diye sor.\n"
         "- HIZMET taslaklarinda ('hizmet_mi': true) teklif satirinda adet "
         "HER ZAMAN 1'dir; hizmet suresi 'Hizmet Baslangic'/'Hizmet Bitis' "
         "GERCEK TARIH ALANLARINA yazilir (metin degil), fiyat da o surenin "
