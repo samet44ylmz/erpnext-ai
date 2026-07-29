@@ -1012,19 +1012,22 @@ def _tool_fatura_taslagi(args):
     if tevkifatli:
         bulunan = _tevkifat_kodu_bul(tevkifat_amaci)
         if bulunan:
-            kdv_orani = 18.0  # Turkey Tax sablonunun bilinen orani
-            kdv_tutari = round(toplam_fiyat * kdv_orani / 100.0, 2)
-            tevkifat_tutari = round(kdv_tutari * bulunan["oran"] / 100.0, 2)
-            alanlar["custom_tevkifat_var_mi"] = 1
+            # SADECE kodu yaziyoruz. Tevkifat TUTARI'ni ve vergi tablosundaki
+            # eksi satiri, sistemde zaten kurulu olan "Fatura Tevkifat
+            # Hesaplama" Client Script'i (kod alani degisince tetiklenir)
+            # kendisi hesaplayip ekliyor. Biz de yazsaydik cift hesap ve
+            # cakisma olurdu; ayrica eksi vergi satirini biz eklemiyorduk.
             alanlar["custom_tevkifat_kodu"] = bulunan["kod"]
-            alanlar["custom_tevkifat_aciklaması"] = bulunan["aciklama"]
-            alanlar["custom_tevkifat_tutarı"] = tevkifat_tutari
+            # bilgi amacli tahmini tutar (AI aciklamasi icin, forma yazilmaz)
+            kdv_orani = 18.0
+            kdv_tutari = round(toplam_fiyat * kdv_orani / 100.0, 2)
+            tahmini_tevkifat = round(kdv_tutari * bulunan["oran"] / 100.0, 2)
             tevkifat_bilgi = {
                 "kod": bulunan["kod"],
                 "aciklama": bulunan["aciklama"],
                 "oran": bulunan["oran"],
-                "kdv_tutari": kdv_tutari,
-                "tevkifat_tutari": tevkifat_tutari,
+                "tahmini_tevkifat_tutari": tahmini_tevkifat,
+                "not": "Tutar ve vergi satiri formda otomatik hesaplanir.",
             }
         else:
             tevkifat_bilgi = {
