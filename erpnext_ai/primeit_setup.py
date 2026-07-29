@@ -300,3 +300,192 @@ def calisanlari_olustur():
 
     print(f"\n{olusan} yeni calisan olusturuldu, {atlanan} zaten vardi.")
     return {"olusan": olusan, "atlanan": atlanan}
+
+
+def demo_gecmis_olustur():
+    """
+    Enerjisa'ya gecmis 'Veritabani Yonetimi' hizmeti alimlari ekler (test/demo
+    icin). Boylece teklif_taslagi/fiyat_onerisi gercek bir gecmis+sadakat
+    senaryosu uzerinde denenebilir. Stok dusurmez (hizmet zaten stoksuz).
+    """
+    import frappe.utils
+    from datetime import timedelta
+
+    sirket = _sirket()
+    if not sirket:
+        print("Sirket bulunamadi.")
+        return
+
+    if not frappe.db.exists("Customer", "Enerjisa"):
+        print("Enerjisa musterisi bulunamadi, once musterileri_olustur calistirin.")
+        return
+    if not frappe.db.exists("Item", "SRV-DBYON"):
+        print("SRV-DBYON urunu bulunamadi, once urunleri_olustur calistirin.")
+        return
+
+    bugun = frappe.utils.getdate()
+    # 3 gecmis alim: 5 ay once, 3 ay once, 1 ay once -- artan fiyatlarla
+    kayitlar = [
+        (150, 38000),
+        (90, 40000),
+        (30, 42000),
+    ]
+
+    olusan = 0
+    for gun_once, fiyat in kayitlar:
+        tarih = bugun - timedelta(days=gun_once)
+        try:
+            si = frappe.new_doc("Sales Invoice")
+            si.customer = "Enerjisa"
+            si.company = sirket
+            si.set_posting_time = 1
+            si.posting_date = tarih
+            si.due_date = tarih
+            si.update_stock = 0
+            si.append("items", {
+                "item_code": "SRV-DBYON",
+                "qty": 1,
+                "rate": fiyat,
+            })
+            si.insert(ignore_permissions=True)
+            si.submit()
+            frappe.db.commit()
+            olusan += 1
+        except Exception as e:
+            print(f"  Fatura olusturulamadi ({tarih}): {str(e)[:200]}")
+
+    print(f"\n{olusan} gecmis fatura olusturuldu (Enerjisa / Veritabani Yonetimi).")
+    return {"olusan": olusan}
+
+
+def demo_gecmis_genis_olustur():
+    """
+    Birkaç farklı musteriye/sektore gecmis alim ekler (test/demo icin),
+    boylece sadakat indirimi kademeleri de farkli senaryolarda gorulebilir.
+    Stok dusurmez (hizmetler zaten stoksuz).
+    """
+    import frappe.utils
+    from datetime import timedelta
+
+    sirket = _sirket()
+    if not sirket:
+        print("Sirket bulunamadi.")
+        return
+
+    bugun = frappe.utils.getdate()
+
+    # (musteri, urun_kodu, [(gun_once, fiyat, adet), ...])
+    plan = [
+        ("Vakıflar Bankası", "PRM-PBA", [
+            (200, 190000, 1),
+            (120, 195000, 1),
+            (45, 198000, 1),
+        ]),  # yuksek ciro -> yuksek sadakat kademesi
+        ("AK Sigorta", "SRV-SISYON", [
+            (60, 39000, 1),
+        ]),  # dusuk ciro -> sadakat yok/dusuk
+        ("A101", "SRV-DISKAYNAK", [
+            (150, 33000, 1),
+            (60, 34500, 1),
+        ]),  # orta ciro -> orta sadakat kademesi
+    ]
+
+    toplam_olusan = 0
+    for musteri, urun_kodu, kayitlar in plan:
+        if not frappe.db.exists("Customer", musteri):
+            print(f"  Musteri bulunamadi, atlaniyor: {musteri}")
+            continue
+        if not frappe.db.exists("Item", urun_kodu):
+            print(f"  Urun bulunamadi, atlaniyor: {urun_kodu}")
+            continue
+
+        for gun_once, fiyat, adet in kayitlar:
+            tarih = bugun - timedelta(days=gun_once)
+            try:
+                si = frappe.new_doc("Sales Invoice")
+                si.customer = musteri
+                si.company = sirket
+                si.set_posting_time = 1
+                si.posting_date = tarih
+                si.due_date = tarih
+                si.update_stock = 0
+                si.append("items", {
+                    "item_code": urun_kodu,
+                    "qty": adet,
+                    "rate": fiyat,
+                })
+                si.insert(ignore_permissions=True)
+                si.submit()
+                frappe.db.commit()
+                toplam_olusan += 1
+            except Exception as e:
+                print(f"  Fatura olusturulamadi ({musteri}, {tarih}): {str(e)[:200]}")
+
+    print(f"\n{toplam_olusan} gecmis fatura olusturuldu (genis demo seti).")
+    return {"olusan": toplam_olusan}
+
+
+def hizmet_olcu_birimi_guncelle():
+    """
+    Hizmet urunlerinin (SRV-*) olcu birimini 'Adet' yerine 'Month' (Ay)
+    yapar -- boylece teklif/faturada '6 Ay' gibi anlamli gorunur.
+    Urunler (PRM-*) 'Nos' (adet/lisans) olarak kalir, degismez.
+    """
+    hedef_birim = "Month" if frappe.db.exists("UOM", "Month") else None
+    if not hedef_birim:
+        print("UYARI: 'Month' UOM'u bulunamadi, birim degistirilemedi.")
+        return {"guncellenen": 0}
+
+    guncellenen = 0
+    for kod, ad, tur, fiyat in URUNLER:
+        if tur != "Hizmet":
+            continue
+        if not frappe.db.exists("Item", kod):
+            continue
+        try:
+            frappe.db.set_value("Item", kod, "stock_uom", hedef_birim)
+            frappe.db.commit()
+            guncellenen += 1
+        except Exception as e:
+            print(f"  Guncellenemedi {kod}: {str(e)[:150]}")
+
+    print(f"\n{guncellenen} hizmet urununun olcu birimi '{hedef_birim}' yapildi.")
+    return {"guncellenen": guncellenen}
+
+
+def hizmet_tarih_alanlari_olustur():
+    """
+    Quotation Item / Sales Order Item / Sales Invoice Item satirlarina
+    'Hizmet Baslangic' ve 'Hizmet Bitis' tarih alanlarini ekler (Custom
+    Field). Bir kere calistirilir, kalicidir. Liste gorunumunde varsayilan
+    olarak gorunur (in_list_view=1).
+    """
+    hedef_doctype_lar = ["Quotation Item", "Sales Order Item", "Sales Invoice Item"]
+    alanlar = [
+        ("custom_hizmet_baslangic", "Hizmet Başlangıç", "item_code"),
+        ("custom_hizmet_bitis", "Hizmet Bitiş", "custom_hizmet_baslangic"),
+    ]
+
+    olusan = 0
+    for dt in hedef_doctype_lar:
+        for fieldname, label, insert_after in alanlar:
+            var = frappe.db.exists("Custom Field", {"dt": dt, "fieldname": fieldname})
+            if var:
+                continue
+            try:
+                cf = frappe.new_doc("Custom Field")
+                cf.dt = dt
+                cf.fieldname = fieldname
+                cf.label = label
+                cf.fieldtype = "Date"
+                cf.insert_after = insert_after
+                cf.in_list_view = 1
+                cf.insert(ignore_permissions=True)
+                frappe.db.commit()
+                olusan += 1
+            except Exception as e:
+                print(f"  Alan olusturulamadi ({dt}.{fieldname}): {str(e)[:200]}")
+
+    frappe.clear_cache()
+    print(f"\n{olusan} yeni alan olusturuldu (toplam {len(hedef_doctype_lar)*len(alanlar)} beklenen).")
+    return {"olusan": olusan}
