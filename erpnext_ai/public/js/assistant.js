@@ -78,15 +78,25 @@
 							// getirir; bizim onerdigimiz fiyati asagida GEC ama
 							// KESIN olarak tekrar yazacagiz.
 							alanlar[k].forEach((satir) => {
-								const row = cur_frm.add_child("items", {
+								const eklenecek = {
 									item_code: satir.item_code,
 									qty: satir.qty,
-								});
-								if (satir.rate != null) {
+								};
+								// ERPNext'in bilmedigi ozel alanlar (tarih vb.)
+								// direkt eklenir, sonradan ezilme riski yok.
+								if (satir.hizmet_baslangic) {
+									eklenecek.custom_hizmet_baslangic = satir.hizmet_baslangic;
+								}
+								if (satir.hizmet_bitis) {
+									eklenecek.custom_hizmet_bitis = satir.hizmet_bitis;
+								}
+								const row = cur_frm.add_child("items", eklenecek);
+								if (satir.rate != null || satir.aciklama != null) {
 									eklenenSatirlar.push({
 										cdt: row.doctype,
 										cdn: row.name,
 										rate: satir.rate,
+										aciklama: satir.aciklama,
 									});
 								}
 							});
@@ -106,7 +116,12 @@
 				if (eklenenSatirlar.length) {
 					setTimeout(() => {
 						eklenenSatirlar.forEach((s) => {
-							frappe.model.set_value(s.cdt, s.cdn, "rate", s.rate);
+							if (s.rate != null) {
+								frappe.model.set_value(s.cdt, s.cdn, "rate", s.rate);
+							}
+							if (s.aciklama != null) {
+								frappe.model.set_value(s.cdt, s.cdn, "description", s.aciklama);
+							}
 						});
 						cur_frm.refresh_field("items");
 					}, 900);
@@ -468,6 +483,20 @@
 		return null;
 	}
 
+	function sozlesme_uyarisi_elementi_mi(baslangic) {
+		let node = baslangic;
+		let derinlik = 0;
+		while (node && node.nodeType === 1 && derinlik < 8) {
+			const txt = (node.textContent || "").trim();
+			if (txt.indexOf("Sozlesme Uyarisi") !== -1 && txt.length < 250) {
+				return node;
+			}
+			node = node.parentElement;
+			derinlik++;
+		}
+		return null;
+	}
+
 	function bildirim_tiklama_yakala() {
 		document.addEventListener(
 			"click",
@@ -480,16 +509,119 @@
 				) {
 					return;
 				}
-				const eslesen = stok_uyarisi_elementi_mi(e.target);
-				if (eslesen) {
+				const eslesenStok = stok_uyarisi_elementi_mi(e.target);
+				if (eslesenStok) {
 					e.preventDefault();
 					e.stopPropagation();
 					e.stopImmediatePropagation();
 					kritik_stok_kontrol();
+					return;
+				}
+				const eslesenSozlesme = sozlesme_uyarisi_elementi_mi(e.target);
+				if (eslesenSozlesme) {
+					e.preventDefault();
+					e.stopPropagation();
+					e.stopImmediatePropagation();
+					sozlesme_kontrolu();
 				}
 			},
 			true
 		);
+	}
+
+	// ----------------------------------------------------------
+	// Sozlesme/lisans yenileme uyarisi (her giriste kontrol)
+	// ----------------------------------------------------------
+	const SOZLESME_DURUM_BILGI = {
+		kritik: { etiket: "Kritik", sinif: "eai-d-kritik" },
+		yakin: { etiket: "Yakin", sinif: "eai-d-acil" },
+		planla: { etiket: "Planlanmali", sinif: "eai-d-normal" },
+	};
+
+	function sozlesme_kontrolu() {
+		if (!window.frappe || !frappe.call) return;
+		frappe.call({
+			method: "erpnext_ai.erpnext_ai.api.sozlesme_kontrolu",
+			callback: function (r) {
+				const res = (r && r.message) || {};
+				if (res.var && res.mesaj) sozlesme_popup_goster(res);
+			},
+			error: function () {},
+		});
+	}
+
+	function sozlesme_karti(s) {
+		const bilgi = SOZLESME_DURUM_BILGI[s.durum] || { etiket: s.durum || "", sinif: "eai-d-normal" };
+		return (
+			'<div class="eai-urun">' +
+			'<div class="eai-urun-ust">' +
+			'<span class="eai-urun-ad">' + kacisla(s.taraf || "") + "</span>" +
+			'<span class="eai-rozet ' + bilgi.sinif + '">' + bilgi.etiket + "</span>" +
+			"</div>" +
+			'<div class="eai-olcu-satir">' +
+			'<div class="eai-olcu"><div class="eai-olcu-etiket">Bitis tarihi</div>' +
+			'<div class="eai-olcu-deger">' + kacisla(s.bitis_tarihi || "") + "</div></div>" +
+			'<div class="eai-olcu"><div class="eai-olcu-etiket">Kalan sure</div>' +
+			'<div class="eai-olcu-deger' + (s.kalan_gun <= 7 ? " eai-vurgu" : "") + '">' +
+			s.kalan_gun + " gun</div></div>" +
+			"</div></div>"
+		);
+	}
+
+	function sozlesme_popup_goster(res) {
+		if (document.getElementById("eai-sozlesme-popup")) return;
+
+		const liste = res.sozlesmeler || [];
+		const overlay = document.createElement("div");
+		overlay.id = "eai-sozlesme-popup-overlay";
+		overlay.className = "eai-popup-overlay";
+
+		const box = document.createElement("div");
+		box.id = "eai-sozlesme-popup";
+		box.className = "eai-popup";
+
+		let govde = '<div class="eai-popup-ozet">' + bicimle(res.mesaj) + "</div>";
+		if (liste.length) {
+			govde += '<div class="eai-popup-liste">';
+			liste.forEach(function (s) {
+				govde += sozlesme_karti(s);
+			});
+			govde += "</div>";
+		}
+
+		box.innerHTML =
+			'<div class="eai-popup-head">' +
+			'<div class="eai-popup-head-sol">' +
+			'<span class="eai-popup-badge">Sozlesme Uyarisi</span>' +
+			'<span class="eai-popup-alt">Yaklasan ' + liste.length + " yenileme</span>" +
+			"</div>" +
+			'<button class="eai-popup-close" title="Kapat" aria-label="Kapat">&times;</button>' +
+			"</div>" +
+			'<div class="eai-popup-body">' + govde + "</div>" +
+			'<div class="eai-popup-foot">' +
+			'<button class="eai-popup-btn-ghost" id="eai-sozlesme-dismiss">Anladim</button>' +
+			'<button class="eai-popup-btn" id="eai-sozlesme-goster">Sozlesmeleri goster</button>' +
+			"</div>";
+
+		overlay.appendChild(box);
+		document.body.appendChild(overlay);
+
+		function kapat() {
+			overlay.remove();
+		}
+		box.querySelector(".eai-popup-close").onclick = kapat;
+		box.querySelector("#eai-sozlesme-dismiss").onclick = kapat;
+		box.querySelector("#eai-sozlesme-goster").onclick = function () {
+			kapat();
+			try {
+				frappe.set_route("List", "Contract");
+			} catch (e) {
+				window.location.href = "/app/contract";
+			}
+		};
+		overlay.onclick = function (e) {
+			if (e.target === overlay) kapat();
+		};
 	}
 
 	function baslat() {
@@ -498,6 +630,7 @@
 		bildirim_tiklama_yakala();
 		// her giriste kritik stok kontrolu -> pop-up
 		setTimeout(kritik_stok_kontrol, 2500);
+		setTimeout(sozlesme_kontrolu, 4500);
 	}
 
 	if (document.readyState === "loading") {
