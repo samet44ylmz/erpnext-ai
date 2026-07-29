@@ -1168,10 +1168,8 @@ TOOLS_SPEC = [
     {"type": "function", "function": {
         "name": "toplam",
         "description": (
-            "Bir alanin toplamini ve kayit adedini dondurur. "
-            "Ornek: bu ayki KDV -> doctype='Sales Invoice', "
-            "alan='total_taxes_and_charges', "
-            "filtreler={'posting_date': ['between', ['2026-07-01','2026-07-31']], 'docstatus': 1}"
+            "Bir alanin toplamini ve adedini dondurur. Orn: KDV icin "
+            "alan='total_taxes_and_charges', filtreler posting_date+docstatus:1."
         ),
         "parameters": {"type": "object", "properties": {
             "doctype": {"type": "string"},
@@ -1190,8 +1188,8 @@ TOOLS_SPEC = [
     {"type": "function", "function": {
         "name": "liste",
         "description": (
-            "Kayitlari listeler. 'siralama' ile en cok/en yuksek sorulari cevaplanir. "
-            "Az sayida alan iste (orn: sadece isim ve miktar), fazla alan token limitini asar."
+            "Kayitlari listeler. 'siralama' ile en cok/yuksek sorulari. "
+            "AZ alan iste."
         ),
         "parameters": {"type": "object", "properties": {
             "doctype": {"type": "string"},
@@ -1211,13 +1209,9 @@ TOOLS_SPEC = [
     {"type": "function", "function": {
         "name": "fiyat_onerisi",
         "description": (
-            "Musteri VEYA potansiyel musteri (Lead) + urun icin fiyat "
-            "onerisi hesaplar. Kayitli musterinin gecmis alimi varsa, o "
-            "fiyati enflasyon (TUFE) ve dolar kuru degisimine gore gunceller "
-            "(hangisi yuksekse onu kullanir). Gecmis yoksa VEYA potansiyel "
-            "musteri (Lead) ise standart satis fiyatini onerir. "
-            "'teklif ver', 'fiyat oner', 'ne kadara verelim' gibi isteklerde "
-            "form_doldur'dan ONCE bu araci cagir."
+            "SADECE fiyat sorulduysa (teklif/fatura taslagi istenmiyorsa) "
+            "kullan. Gecmis alim + enflasyon/kur veya standart fiyat, "
+            "sektor ayari ve sadakat indirimiyle fiyat hesaplar."
         ),
         "parameters": {"type": "object", "properties": {
             "musteri": {"type": "string", "description": "Musteri adi"},
@@ -1231,12 +1225,9 @@ TOOLS_SPEC = [
     {"type": "function", "function": {
         "name": "teklif_taslagi",
         "description": (
-            "Musteri VEYA potansiyel musteri (Lead) + urun + miktar icin DOGRU "
-            "YAPIDA Quotation (teklif) taslagi hazirlar. Isimleri otomatik cozer "
-            "(once Customer'da, sonra Lead'de arar), fiyati hesaplar, satir "
-            "tablosunu dogru doldurur. Teklif/fiyat/fatura-benzeri istekler icin "
-            "'form_doldur' YERINE bunu kullan — form_doldur Quotation/Sales "
-            "Invoice gibi satir tablolu belgeler icin DOGRU CALISMAZ."
+            "Quotation (teklif) taslagi hazirlar. Musteri/Lead ve urun "
+            "isimlerini otomatik cozer, fiyati hesaplar. Teklif isteklerinde "
+            "form_doldur YERINE bunu kullan."
         ),
         "parameters": {"type": "object", "properties": {
             "musteri": {"type": "string"},
@@ -1247,25 +1238,17 @@ TOOLS_SPEC = [
                 "ise bu ADET/LISANS sayisidir ('50 lisans' -> 50)."
             )},
             "sure_bazli": {"type": "boolean", "description": (
-                "COK ONEMLI, URUN KODUNA DEGIL KULLANICININ SOZUNE BAK: "
-                "kullanici 'ay', 'yil', 'aylik', 'yillik' gibi bir SURE "
-                "ifadesi kullandiysa true (fiyat yillik listeden orantili "
-                "hesaplanir, satirda adet=1 olur). 'adet', 'lisans', 'kullanici' "
-                "gibi bir SAYIM ifadesi kullandiysa false (fiyat birim x adet "
-                "olarak direkt carpilir). Ayni urun (orn: DbRunner) hem sure "
-                "hem adet bazli satilabilir -- karar HER ZAMAN cumledeki "
-                "ifadeye gore verilir, urun koduna (SRV-/PRM-) GORE DEGIL."
+                "'ay/yil' gecerse true (yillik fiyattan oranli, adet=1). "
+                "'adet/lisans' gecerse false (birim x adet). Urun koduna DEGIL, "
+                "kullanicinin sozune bak."
             )},
         }, "required": ["musteri", "urun", "sure_bazli"]},
     }},
     {"type": "function", "function": {
         "name": "fatura_taslagi",
         "description": (
-            "Musteri + urun + miktar icin Sales Invoice (Satis Faturasi) "
-            "taslagi hazirlar (kaydetmez!). 'fatura kes' isteklerinde "
-            "teklif_taslagi YERINE bunu kullan. Fatura kesmeden ONCE "
-            "MUTLAKA KDV ve tevkifat tercihini sor (asagidaki kurallara "
-            "bak), sonra bu araci cagir."
+            "Sales Invoice (fatura) taslagi hazirlar. 'fatura kes' "
+            "isteklerinde kullan. Cagirmadan ONCE KDV/tevkifat sor."
         ),
         "parameters": {"type": "object", "properties": {
             "musteri": {"type": "string"},
@@ -1284,20 +1267,16 @@ TOOLS_SPEC = [
                 "'hayir' dediyse false."
             )},
             "tevkifat_amaci": {"type": "string", "description": (
-                "SADECE tevkifatli=true ise doldur. Kullanicinin 'ne icin "
-                "tevkifat' sorusuna verdigi cevap (orn: 'reklam hizmeti', "
-                "'nakliye', 'temizlik'). Bu metinle en uygun tevkifat kodu "
-                "otomatik bulunur."
+                "Tevkifatli ise: kullanicinin 'ne icin' cevabi (orn: 'reklam "
+                "hizmeti'). Kod otomatik bulunur."
             )},
         }, "required": ["musteri", "urun", "sure_bazli", "kdv_dahil", "tevkifatli"]},
     }},
     {"type": "function", "function": {
         "name": "form_doldur",
         "description": (
-            "Yeni kayit icin FORM TASLAGI hazirlar (kaydetmez!). Job Opening gibi "
-            "BASIT (satir tablosu olmayan) belgeler icin kullan. "
-            "Quotation/Sales Invoice/Sales Order gibi urun satiri iceren teklif/"
-            "fatura istekleri icin BUNU DEGIL, 'teklif_taslagi' aracini kullan."
+            "Basit form taslagi (Job Opening gibi, satir tablosu olmayan). "
+            "Teklif/fatura icin BUNU KULLANMA."
         ),
         "parameters": {"type": "object", "properties": {
             "doctype": {"type": "string", "description": "orn: Sales Invoice, Quotation"},
@@ -1307,12 +1286,8 @@ TOOLS_SPEC = [
     {"type": "function", "function": {
         "name": "stok_analiz",
         "description": (
-            "AKILLI stok analizi: satis hizina gore siparis onerisi. "
-            "Her urun icin aylik satis hizi, kac gunluk stok kaldigi ve "
-            "kac adet siparis verilmesi gerektigini hesaplar. "
-            "'ne siparis etmeliyim', 'ne kadar siparis vereyim', 'stok analizi', "
-            "'hangi urun bitiyor' gibi sorularda BUNU kullan (stok_durumu yerine). "
-            "Yavas satan urunlerde siparis onermez, fazla stok baglanmasin diye."
+            "Satis hizina gore stok analizi ve siparis onerisi. Stok "
+            "sorularinda BUNU kullan (stok_durumu yerine)."
         ),
         "parameters": {"type": "object", "properties": {
             "gecmis_gun": {"type": "integer", "description": "kac gunluk satisa bakilsin, varsayilan 30 (son 1 ay)"},
@@ -1340,178 +1315,53 @@ def _system_prompt(context=None):
     if context:
         dt = context.get("doctype")
         docname = context.get("docname")
-        route = context.get("route")
         parts = []
         if dt:
-            parts.append(f"Kullanici su an '{dt}' ekraninda.")
+            parts.append(f"Ekran: {dt}.")
         if docname:
-            parts.append(f"Acik kayit: {docname}.")
-        if route and not dt:
-            parts.append(f"Sayfa: {route}.")
+            parts.append(f"Kayit: {docname}.")
         if parts:
-            ctx = "\nBAGLAM: " + " ".join(parts) + " Sorusu bu ekranla ilgiliyse buna gore cevapla."
+            ctx = "\nBAGLAM: " + " ".join(parts)
 
     return (
-        "Sen ERPNext icinde calisan bir asistansin. Kullanicinin sorularini "
-        "verilen araclarla cevaplarsin.\n"
-        "KURALLAR:\n"
-        "- Tarih araligi gerekiyorsa ONCE 'bugun' aracini cagir.\n"
-        "- Kesinlesmis belgeler icin filtrelere 'docstatus': 1 ekle.\n"
-        "- Tutarlari Turk Lirasi formatinda sun (orn: 45.200,00 TL).\n"
-        "- Veriyi ASLA uydurma; yalnizca arac sonuclarini kullan.\n"
-        "- ARAC CIKTISINI (JSON, ham veri, kod blogu) KULLANICIYA GOSTERME. "
-        "Sadece dogal, akici Turkce cumlelerle ozetle. Asla { } veya JSON yazma.\n"
-        "- Kullanici yeni kayit olusturmak isterse 'form_doldur' aracini kullan ve "
-        "verdigi bilgileri alanlara yerlestir. Kaydetme islemini SEN YAPMAZSIN; "
-        "taslak kullaniciya gosterilir. Cevabinda kisaca 'taslagi hazirladim, "
-        "gozden gecirip kaydedebilirsiniz' de. Teknik detay/JSON verme.\n"
-        "- Liste sorularinda az alan iste (isim + gerekli olan), token limiti icin.\n"
-        "- Stok/siparis sorularinda 'stok_analiz' aracini kullan (satis hizina "
-        "gore akilli oneri verir). Cevapta her urun icin: kac gunluk stok kaldi, "
-        "ayda ne kadar satiyor, kac adet siparis onerilir ve NEDEN. "
-        "Aciliyet sirasina gore anlat (once kritik olanlar). "
-        "'fazla_stok' veya 'olu_stok' durumundaki urunler icin siparis ONERME; "
-        "aksine stok fazlasi oldugunu soyle. "
-        "Siparisi SEN VERMEZSIN, sadece onerirsin.\n"
-        "- Satis gecmisi yoksa (aylik_satis 0 ise) bunu durustce belirt: "
-        "'yeterli satis verisi yok, tahmin yapilamiyor' de, uydurma.\n"
-        "- 'guven' alani 'dusuk' ise oneriyi kesin bir emir gibi sunma; "
-        "tahminin az sayida faturaya dayandigini ve teyit gerektigini soyle. "
-        "'esik_alti_satis_yok' durumunda satis hizi hesaplanamadigini, "
-        "onerinin sabit esik miktarina dayandigini belirt.\n"
-        "- Erisim reddedilirse kibarca bu veriye erisimin olmadigini soyle.\n"
+        "ERPNext asistanisin. Araclarla veri cekip Turkce cevap verirsin.\n"
+        "TEMEL: Tarih gerekirse once 'bugun' cagir. Kesinlesmis belge = "
+        "docstatus:1. Tutarlar TL formatinda (45.200,00 TL). Veri UYDURMA. "
+        "JSON/ham cikti GOSTERME, dogal cumle kur. Listelerde az alan iste.\n"
         "\n"
-        "IK (HCM) METIN URETIMI:\n"
-        "- Kullanici IS TANIMI isterse (orn: 'satis muduru icin is tanimi yaz') "
-        "su basliklarla yapilandirilmis bir taslak yaz:\n"
-        "  **Pozisyon Ozeti** (2-3 cumle), **Temel Sorumluluklar** (5-7 madde), "
-        "**Aranan Nitelikler** (4-6 madde), **Tercih Sebebi** (2-3 madde).\n"
-        "- Kullanici SMART HEDEF isterse 3-5 hedef yaz. Her hedef olculebilir "
-        "bir sayi ve net bir sure icermeli (orn: 'ceyrek sonuna kadar musteri "
-        "memnuniyetini %85e cikarmak'). Her hedefin altina kisa bir olcum "
-        "kriteri ekle.\n"
-        "- Bu metinlerde detayli ol; kisalik kurali IK metinleri icin gecerli degil.\n"
-        "- Bu metinler TASLAKTIR. Sonunda kisaca 'Bu bir taslaktir, gozden "
-        "gecirip duzenleyebilirsiniz' de.\n"
-        "- Gercek calisan ismi, maas, kisisel bilgi ISTEME ve UYDURMA. "
-        "Yalnizca pozisyon adiyla calis. Maas/personel verisine erisimin yok.\n"
-        "- Kullanici bu metni sisteme kaydetmek isterse 'form_doldur' ile "
-        "'Job Opening' taslagi hazirla (job_title ve description alanlarini doldur). "
-        "Kaydetmeyi kullanici yapar.\n"
+        "TEKLIF/FATURA:\n"
+        "- 'teklif' -> teklif_taslagi. 'fatura' -> fatura_taslagi.\n"
+        "- fatura_taslagi ONCESI sor: KDV dahil mi? Tevkifat var mi? "
+        "Tevkifat evetse: ne icin? (cevabi tevkifat_amaci'na yaz, kodu arac bulur). "
+        "Cevaplar onceki mesajlardaysa TEKRAR SORMA.\n"
+        "- sure_bazli karari URUN KODUNA DEGIL kullanicinin sozune bakar: "
+        "'ay/yil' gecerse true (miktar=ay sayisi, yillik fiyattan oranli, "
+        "satirda adet=1, tarih alanlari dolar). 'adet/lisans' gecerse false "
+        "(birim x adet). Belirsizse sor.\n"
+        "- Sayiyi ('6 aylik', '50 lisans') MUTLAKA miktar'a koy. Yil -> ay (1 yil=12).\n"
+        "- Aciklarken belirt: gecmis fiyat + enflasyon/kur farki, sektor ayari "
+        "(sektor_gerekce'yi temel al ama her seferinde FARKLI kelimelerle anlat), "
+        "sadakat indirimi, nihai tutar. Veri yoksa durustce soyle.\n"
+        "- Lead'de gecmis/sadakat olmaz, standart fiyat kullanilir.\n"
         "\n"
-        "TEKLIF/FIYAT ONERISI:\n"
-        "- Kullanici SADECE fiyat sorarsa (teklif taslagi degil), 'fiyat_onerisi' "
-        "aracini kullan ve sonucu anlat.\n"
-        "- Kullanici teklif/form/fatura ISTERSE (musteri+urun+miktar belliyse), "
-        "DOGRUDAN 'teklif_taslagi' aracini cagir (fiyat_onerisi'ni ayrica "
-        "cagirmana gerek yok, teklif_taslagi bunu kendi icinde yapar).\n"
-        "- Sonucu anlatirken: eski fiyati, hangi faktorun (enflasyon/kur/"
-        "standart fiyat guncellemesi) kullanildigini ve yeni fiyati ACIKCA "
-        "belirt. Ornek: '4 ay once 500 TL'den almisti. Bu surede enflasyon "
-        "%13, dolar kuru %8 artti; enflasyon daha yuksek oldugu icin fiyata "
-        "%13 yansitildi, yeni oneri 565 TL.'\n"
-        "- 'kullanilan_faktor': 'standart_fiyat_guncellemesi' ise: bu, "
-        "enflasyon/kur tahmininden BAGIMSIZ olarak, urunun guncel standart "
-        "fiyatinin (sirketin kendi yaptigi fiyat guncellemesi) daha yuksek "
-        "ciktigini gosterir. Bunu acikca belirt, ornek: 'Enflasyona gore "
-        "tahmini fiyat 565 TL olurdu, ancak bu urunun guncel standart fiyati "
-        "4.000 TL'ye guncellenmis; standart fiyat daha yuksek oldugu icin o "
-        "esas alindi.'\n"
-        "- KRITIK: Kullanici '6 aylik', '3 ay', '1 yillik', '50 lisans', "
-        "'10 adet' gibi bir SAYI belirtirse, bu sayiyi MUTLAKA 'miktar' "
-        "parametresine koy. 'Yil' belirtilirse aya cevir (1 yil=12 ay). "
-        "Sayiyi metinden cikarmadan varsayilan (1) ile arac cagirma -- bu "
-        "yanlis sonuc uretir.\n"
-        "- COK ONEMLI -- 'sure_bazli' KARARI URUN KODUNA (SRV-/PRM-) DEGIL, "
-        "KULLANICININ KULLANDIGI KELIMEYE gore verilir:\n"
-        "  * 'ay', 'aylik', 'yil', 'yillik' gibi bir SURE ifadesi varsa "
-        "-> sure_bazli=true. Miktar AY SAYISIDIR ('6 aylik' -> 6, "
-        "'1 yillik' -> 12). Fiyat, urunun YILLIK standart fiyatindan "
-        "ORANTILI hesaplanir (toplam = yillik_fiyat x ay/12). Ayni urun "
-        "(orn: DbRunner) bu sekilde de satilabilir, urun ismi/kodu fark "
-        "etmez.\n"
-        "  * 'adet', 'lisans', 'kullanici' gibi bir SAYIM ifadesi varsa "
-        "-> sure_bazli=false. Miktar ADET/LISANS SAYISIDIR ('50 lisans' "
-        "-> 50). Fiyat direkt carpilir (birim x adet), oran yoktur.\n"
-        "  * Belirsizse (ne sure ne sayim belirtildiyse, sadece 'teklif "
-        "hazirla' dendiyse) kullaniciya sor: 'sure mi (kac ay/yil) yoksa "
-        "adet/lisans sayisi mi?'\n"
-        "- SURE BAZLI taslaklarda teklif satirinda adet HER ZAMAN 1'dir; "
-        "hizmet suresi 'Hizmet Baslangic'/'Hizmet Bitis' GERCEK TARIH "
-        "ALANLARINA yazilir (metin degil), fiyat da o surenin TOPLAM "
-        "tutaridir (aylik degil). Bunu anlatirken 'X ay icin toplam Y TL, "
-        "Z tarihinden W tarihine kadar' de, '1 adet' ifadesini one cikarma.\n"
-        "- Fiyat hesabina bir SADAKAT INDIRIMI katmani daha eklenir, "
-        "TOPLAM SIPARIS TUTARI uzerinden (urun basi degil): "
-        "'sadakat_indirim_yuzde' musterinin son 12 aylik cirosuna gore "
-        "belirlenir (sadece Customer'da olur, Lead'de yok). Ornek: 'Bu "
-        "musteri son 12 ayda 180.000 TL ciro yapmis, bu nedenle %8 sadakat "
-        "indirimi uygulandi; toplam tutar 40.000 TL yerine 36.800 TL oldu.' "
-        "(Buyuk siparis/toptan indirimi ARTIK YOK -- kaldirildi, bahsetme.)\n"
-        "- Gecmis alim yoksa: standart fiyat kullanildigini belirt.\n"
-        "- '_action': 'fiyat_bulunamadi' donerse, kullaniciya birim fiyati "
-        "kendisinin belirtmesi gerektigini soyle.\n"
-        "- Enflasyon/kur verisi alinamadiysa bunu durustce soyle, uydurma.\n"
-        "- Miktar belirtilmediyse taslak acmadan once miktari sor.\n"
-        "- 'potansiyel musteri', 'aday musteri' gibi ifadeler Lead demektir; "
-        "'musteri_turu': 'Lead' donerse bunun henuz kayitli musteri olmadigini, "
-        "gecmis alim olamayacagini ve standart fiyat onerildigini belirt.\n"
-        "- 'sektor_ayari_yuzde' sifir degilse: musterinin sektorune "
-        "('sektor_grubu') gore taban fiyatin ayarlandigini belirt. "
-        "'sektor_gerekce' alanindaki bilgiyi TEMEL AL ama BIREBIR KOPYALAMA -- "
-        "ayni anlami HER SEFERINDE FARKLI kelime ve cumle yapisiyla, dogal "
-        "bir sekilde ifade et. Sebep hep ayni kalsin (uydurma), ama ifade "
-        "bicimi tekrar etmesin.\n"
+        "IK METINLERI:\n"
+        "- Is tanimi: Pozisyon Ozeti, Temel Sorumluluklar (5-7), Aranan "
+        "Nitelikler (4-6), Tercih Sebebi. SMART hedef: 3-5 olculebilir hedef, "
+        "her biri sayi+sure icersin. Bunlarda detayli yaz. Sonunda 'taslaktir' de. "
+        "Gercek calisan/maas bilgisi ISTEME, sadece pozisyon adiyla calis.\n"
+        "- Kaydetmek isterse form_doldur ile Job Opening taslagi ac.\n"
         "\n"
-        "FATURA (SATIS FATURASI) vs TEKLIF (QUOTATION) AYRIMI:\n"
-        "- 'teklif hazirla/ver/oner' -> 'teklif_taslagi' kullan. KDV/tevkifat "
-        "SORMA, teklif asamasinda bu detaylar sorulmaz.\n"
-        "- 'fatura kes/olustur', 'satis faturasi' -> 'fatura_taslagi' kullan. "
-        "Bu araci cagirmadan ONCE MUTLAKA sirayla sor (cevaplari onceki "
-        "mesajlardan da kontrol et, tekrar sorma):\n"
-        "  1) 'KDV dahil edeyim mi?' (evet/hayir)\n"
-        "  2) 'Tevkifatli olsun mu?' (evet/hayir)\n"
-        "  3) Tevkifatli 'evet' ise: 'Ne icin tevkifat uygulanacak?' diye sor "
-        "(orn: reklam hizmeti, nakliye, temizlik vb.). Cevabi 'tevkifat_amaci' "
-        "olarak gonder; en uygun kodu SEN SECMEZSIN, arac otomatik bulur, "
-        "sen sadece amaci ilet.\n"
-        "- Musteri KDV/tevkifat sorularina cevap vermeden fatura_taslagi'ni "
-        "CAGIRMA. Sorulari TEK mesajda birlikte de sorabilirsin (KDV mi, "
-        "tevkifat mi diye ikisini bir arada sor), ama cevap gelmeden arac "
-        "cagirma.\n"
-        "- 'tevkifat_bilgi' icinde 'not' varsa (kod bulunamadi), bunu "
-        "kullaniciya soyle ve kodu kendisinin secmesi gerektigini belirt.\n"
-        "- Tevkifat kodu bulunduysa, hangi kodun (orn. '824 - Ticari reklam "
-        "hizmetleri') ve neden secildigini KISACA acikla.\n"
+        "STOK: 'stok_analiz' kullan. Her urun icin kalan gun, aylik satis, "
+        "onerilen siparis ve NEDEN. Aciliyet sirasiyla. fazla_stok/olu_stok'ta "
+        "siparis ONERME. Satis verisi yoksa/guven dusukse belirt.\n"
         "\n"
-        "COK ONEMLI - DOGRULUK KURALI:\n"
-        "- SADECE gercekten cagirdigin araclarin sonucuna dayanarak konus.\n"
-        "- 'form_doldur' aracini CAGIRMADIYSAN, 'taslak hazirladim', "
-        "'form olusturdum' gibi ifadeler KULLANMA. Bunu soylemek icin o araci "
-        "GERCEKTEN cagirmis olman sart.\n"
-        "- Bir islemi yaptigini iddia etmeden once, o islemi yapan araci "
-        "cagirdigindan emin ol. Yapmadigin bir seyi yapmis gibi anlatma.\n"
-        "- Kullanici teklif/fiyat/form istediginde ve yeterli bilgi (musteri, "
-        "urun, miktar) varsa, sadece anlatma, 'form_doldur' aracini DA cagir; "
-        "sonra 'taslak hazir' de. Bilgi eksikse taslak acmadan once kullaniciya sor.\n"
-        "\n"
-        "- Diger sorularda kisa, net ve Turkce cevap ver."
+        "DOGRULUK (KRITIK):\n"
+        "- Sadece GERCEKTEN cagirdigin araclarin sonucuna dayan.\n"
+        "- Ilgili araci CAGIRMADIYSAN 'taslak hazirladim/olusturdum' DEME.\n"
+        "- Yeterli bilgi varsa sadece anlatma, araci DA cagir. Eksikse sor.\n"
+        "- Erisim reddedilirse kibarca soyle. Kisa ve net cevap ver."
         + ctx
     )
-
-
-_TASLAK_IDDIA_KALIPLARI = (
-    "taslağı hazırladım", "taslagi hazirladim",
-    "taslak hazırladım", "taslak hazirladim",
-    "formu hazırladım", "formu hazirladim",
-    "form hazırladım", "form hazirladim",
-    "formu oluşturdum", "formu olusturdum",
-    "form oluşturdum", "form olusturdum",
-    "taslağı oluşturdum", "taslagi olusturdum",
-    "bu bir taslaktır", "bu bir taslaktir",
-    "taslaktır, gözden", "taslaktir, gozden",
-    "taslaktır, kaydedebilir", "taslaktir, kaydedebilir",
-)
 
 
 def _dogruluk_kontrolu(cevap, form_taslak):
@@ -1585,9 +1435,9 @@ def ask(question, context=None, gecmis=None):
         try:
             onceki = json.loads(gecmis) if isinstance(gecmis, str) else gecmis
             if isinstance(onceki, list):
-                for m in onceki[-12:]:  # son 12 mesajla sinirla
+                for m in onceki[-6:]:  # son 6 mesaj yeterli (token tasarrufu)
                     if isinstance(m, dict) and m.get("role") in ("user", "assistant") and m.get("content"):
-                        messages.append({"role": m["role"], "content": str(m["content"])[:3000]})
+                        messages.append({"role": m["role"], "content": str(m["content"])[:800]})
         except Exception:
             pass
 
