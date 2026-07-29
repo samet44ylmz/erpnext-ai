@@ -185,7 +185,7 @@ def musterileri_olustur():
             try:
                 cg = frappe.new_doc("Customer Group")
                 cg.customer_group_name = grup
-                cg.parent_customer_group = "All Customer Groups"
+                cg.parent_customer_group = "Bütün Müşteri Grupları"
                 cg.insert(ignore_permissions=True)
                 frappe.db.commit()
             except Exception as e:
@@ -198,7 +198,8 @@ def musterileri_olustur():
             try:
                 c = frappe.new_doc("Customer")
                 c.customer_name = firma
-                c.customer_group = grup if frappe.db.exists("Customer Group", grup) else None
+                c.customer_group = grup if frappe.db.exists("Customer Group", grup) else "Bütün Müşteri Grupları"
+                c.territory = "Turkey"
                 c.customer_type = "Company"
                 c.insert(ignore_permissions=True)
                 frappe.db.commit()
