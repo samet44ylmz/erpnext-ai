@@ -533,7 +533,7 @@
 					e.preventDefault();
 					e.stopPropagation();
 					e.stopImmediatePropagation();
-					sozlesme_kontrolu();
+					sozlesme_kontrolu(true); // zorla goster, oturum limiti gecersiz
 				}
 			},
 			true
@@ -549,13 +549,30 @@
 		planla: { etiket: "Planlanmali", sinif: "eai-d-normal" },
 	};
 
-	function sozlesme_kontrolu() {
+	const EAI_OTURUM_ANAHTARI = "eai_sozlesme_popup_gosterildi";
+
+	function sozlesme_kontrolu(zorla) {
 		if (!window.frappe || !frappe.call) return;
+		// Pop-up bu tarayici sekmesinde (oturumda) sadece BIR KEZ cikar.
+		// Kullanici "Tum Uyarilari Gor" ile kalici sayfadan istedigi zaman
+		// tekrar bakabilir; bu bayrak sadece OTOMATIK pop-up'i sinirlar.
+		if (!zorla) {
+			try {
+				if (sessionStorage.getItem(EAI_OTURUM_ANAHTARI)) return;
+			} catch (e) {
+				// sessionStorage yoksa (gizli sekme vb.) sinirlama yapma
+			}
+		}
 		frappe.call({
 			method: "erpnext_ai.erpnext_ai.api.sozlesme_kontrolu",
 			callback: function (r) {
 				const res = (r && r.message) || {};
-				if (res.var && res.mesaj) sozlesme_popup_goster(res);
+				if (res.var && res.mesaj) {
+					sozlesme_popup_goster(res);
+					try {
+						sessionStorage.setItem(EAI_OTURUM_ANAHTARI, "1");
+					} catch (e) {}
+				}
 			},
 			error: function () {},
 		});
@@ -619,7 +636,7 @@
 			'<div class="eai-popup-body">' + govde + "</div>" +
 			'<div class="eai-popup-foot">' +
 			'<button class="eai-popup-btn-ghost" id="eai-sozlesme-dismiss">Anladim</button>' +
-			'<button class="eai-popup-btn" id="eai-sozlesme-goster">Sozlesmeleri goster</button>' +
+			'<button class="eai-popup-btn" id="eai-sozlesme-goster">Tum Uyarilari Gor</button>' +
 			"</div>";
 
 		overlay.appendChild(box);
@@ -663,9 +680,9 @@
 		box.querySelector("#eai-sozlesme-goster").onclick = function () {
 			kapat();
 			try {
-				frappe.set_route("List", "Contract");
+				frappe.set_route("teklif-uyarilari");
 			} catch (e) {
-				window.location.href = "/app/contract";
+				window.location.href = "/app/teklif-uyarilari";
 			}
 		};
 		overlay.onclick = function (e) {
@@ -775,6 +792,14 @@
 			},
 		});
 	});
+
+	// Bu fonksiyonlari disariya aciyoruz ki "Teklif Uyarilari" ozel sayfasi
+	// (ayri bir JS dosyasi) ayni mantigi tekrar yazmadan kullanabilsin.
+	window.eaiYardimcilar = {
+		kacisla: kacisla,
+		bicimle: bicimle,
+		formTaslagiAc: form_taslagi_ac,
+	};
 
 	if (document.readyState === "loading") {
 		document.addEventListener("DOMContentLoaded", () => setTimeout(baslat, 1500));
