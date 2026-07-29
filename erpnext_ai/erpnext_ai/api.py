@@ -898,6 +898,7 @@ def _tool_teklif_taslagi(args):
     musteri_girilen = args.get("musteri")
     urun = args.get("urun")
     miktar = args.get("miktar") or 1
+    sure_bazli = bool(args.get("sure_bazli"))
 
     if not musteri_girilen or not urun:
         return "Musteri ve urun bilgisi gerekli."
@@ -921,6 +922,7 @@ def _tool_teklif_taslagi(args):
             "musteri": musteri_girilen,
             "urun": urun_cozulmus,
             "miktar": miktar,
+            "sure_bazli": sure_bazli,
         })
         fiyat_data = json.loads(fiyat_ham) if isinstance(fiyat_ham, str) and fiyat_ham.startswith("{") else {}
     except Exception:
@@ -936,15 +938,14 @@ def _tool_teklif_taslagi(args):
                    "Birim fiyati siz belirtmelisiniz.",
         }, ensure_ascii=False, default=str)
 
-    hizmet_mi = urun_cozulmus.startswith("SRV-")
-
-    if hizmet_mi:
-        # Hizmette adet HER ZAMAN 1; sure GERCEK TARIH ALANLARINA yazilir
+    if sure_bazli:
+        # SURE BAZLI: adet HER ZAMAN 1; sure GERCEK TARIH ALANLARINA yazilir
         # (custom_hizmet_baslangic / custom_hizmet_bitis), fiyat TOPLAM'dir.
+        # Urun kodu (SRV-/PRM-) ONEMLI DEGIL -- karar kullanicinin sozune gore verildi.
         bugun = frappe.utils.getdate()
         bitis = frappe.utils.add_months(bugun, miktar)
         urun_adi = frappe.db.get_value("Item", urun_cozulmus, "item_name") or urun_cozulmus
-        aciklama = f"{urun_adi} Hizmeti — {miktar} Ay"
+        aciklama = f"{urun_adi} — {miktar} Ay"
         satir = {
             "item_code": urun_cozulmus,
             "qty": 1,
@@ -954,6 +955,7 @@ def _tool_teklif_taslagi(args):
             "hizmet_bitis": bitis.isoformat(),
         }
     else:
+        # ADET/LISANS BAZLI: direkt carpim, sure/tarih yok.
         satir = {"item_code": urun_cozulmus, "qty": miktar, "rate": birim_fiyat}
 
     return json.dumps({
@@ -968,7 +970,7 @@ def _tool_teklif_taslagi(args):
             "musteri": musteri_cozulmus,
             "musteri_turu": tur,
             "urun": urun_cozulmus,
-            "hizmet_mi": hizmet_mi,
+            "sure_bazli": sure_bazli,
             "miktar": miktar,
             "birim_fiyat": birim_fiyat,
             "toplam_fiyat": toplam_fiyat,
@@ -1073,12 +1075,21 @@ TOOLS_SPEC = [
             "musteri": {"type": "string"},
             "urun": {"type": "string"},
             "miktar": {"type": "integer", "description": (
-                "COK ONEMLI: kullanicinin belirttigi sayidir. '6 aylik hizmet' "
-                "-> miktar=6. '50 lisans' -> miktar=50. '1 yillik' -> miktar=12 "
-                "(hizmette yil ay'a cevrilir). Sayiyi MUTLAKA metinden cikar, "
-                "varsayilan 1'i sadece hic sayi belirtilmediyse kullan."
+                "Kullanicinin belirttigi sayidir. 'sure_bazli'=true ise bu AY "
+                "SAYISIDIR ('6 aylik' -> 6, '1 yillik' -> 12). 'sure_bazli'=false "
+                "ise bu ADET/LISANS sayisidir ('50 lisans' -> 50)."
             )},
-        }, "required": ["musteri", "urun"]},
+            "sure_bazli": {"type": "boolean", "description": (
+                "COK ONEMLI, URUN KODUNA DEGIL KULLANICININ SOZUNE BAK: "
+                "kullanici 'ay', 'yil', 'aylik', 'yillik' gibi bir SURE "
+                "ifadesi kullandiysa true (fiyat yillik listeden orantili "
+                "hesaplanir, satirda adet=1 olur). 'adet', 'lisans', 'kullanici' "
+                "gibi bir SAYIM ifadesi kullandiysa false (fiyat birim x adet "
+                "olarak direkt carpilir). Ayni urun (orn: DbRunner) hem sure "
+                "hem adet bazli satilabilir -- karar HER ZAMAN cumledeki "
+                "ifadeye gore verilir, urun koduna (SRV-/PRM-) GORE DEGIL."
+            )},
+        }, "required": ["musteri", "urun", "sure_bazli"]},
     }},
     {"type": "function", "function": {
         "name": "form_doldur",
@@ -1211,21 +1222,25 @@ def _system_prompt(context=None):
         "parametresine koy. 'Yil' belirtilirse aya cevir (1 yil=12 ay). "
         "Sayiyi metinden cikarmadan varsayilan (1) ile arac cagirma -- bu "
         "yanlis sonuc uretir.\n"
-        "- MIKTAR ANLAMI urun koduna gore degisir: kod 'SRV-' ile "
-        "basliyorsa (hizmet -- Veritabani Yonetimi, Sistem Yonetimi vb.) "
-        "miktar AY SAYISIDIR (orn: '6 aylik hizmet'). Hizmetlerde STANDART "
-        "FIYAT YILLIKTIR; toplam tutar = yillik_fiyat x (ay/12) seklinde "
-        "ORANTILI hesaplanir (6 ay = yillik fiyatin yarisi). Kod 'PRM-' ile "
-        "basliyorsa (urun -- PrimeON, DbRunner vb.) miktar LISANS/ADET "
-        "SAYISIDIR (orn: '50 lisans'), direkt carpilir, oran yoktur. "
-        "Miktar sorarken buna gore sor: hizmette 'kac ay/yil', urunde "
-        "'kac adet/lisans' diye sor.\n"
-        "- HIZMET taslaklarinda ('hizmet_mi': true) teklif satirinda adet "
-        "HER ZAMAN 1'dir; hizmet suresi 'Hizmet Baslangic'/'Hizmet Bitis' "
-        "GERCEK TARIH ALANLARINA yazilir (metin degil), fiyat da o surenin "
-        "TOPLAM tutaridir (aylik degil). Bunu anlatirken 'X ay icin toplam "
-        "Y TL, Z tarihinden W tarihine kadar' de, '1 adet' ifadesini one "
-        "cikarma.\n"
+        "- COK ONEMLI -- 'sure_bazli' KARARI URUN KODUNA (SRV-/PRM-) DEGIL, "
+        "KULLANICININ KULLANDIGI KELIMEYE gore verilir:\n"
+        "  * 'ay', 'aylik', 'yil', 'yillik' gibi bir SURE ifadesi varsa "
+        "-> sure_bazli=true. Miktar AY SAYISIDIR ('6 aylik' -> 6, "
+        "'1 yillik' -> 12). Fiyat, urunun YILLIK standart fiyatindan "
+        "ORANTILI hesaplanir (toplam = yillik_fiyat x ay/12). Ayni urun "
+        "(orn: DbRunner) bu sekilde de satilabilir, urun ismi/kodu fark "
+        "etmez.\n"
+        "  * 'adet', 'lisans', 'kullanici' gibi bir SAYIM ifadesi varsa "
+        "-> sure_bazli=false. Miktar ADET/LISANS SAYISIDIR ('50 lisans' "
+        "-> 50). Fiyat direkt carpilir (birim x adet), oran yoktur.\n"
+        "  * Belirsizse (ne sure ne sayim belirtildiyse, sadece 'teklif "
+        "hazirla' dendiyse) kullaniciya sor: 'sure mi (kac ay/yil) yoksa "
+        "adet/lisans sayisi mi?'\n"
+        "- SURE BAZLI taslaklarda teklif satirinda adet HER ZAMAN 1'dir; "
+        "hizmet suresi 'Hizmet Baslangic'/'Hizmet Bitis' GERCEK TARIH "
+        "ALANLARINA yazilir (metin degil), fiyat da o surenin TOPLAM "
+        "tutaridir (aylik degil). Bunu anlatirken 'X ay icin toplam Y TL, "
+        "Z tarihinden W tarihine kadar' de, '1 adet' ifadesini one cikarma.\n"
         "- Fiyat hesabina bir SADAKAT INDIRIMI katmani daha eklenir, "
         "TOPLAM SIPARIS TUTARI uzerinden (urun basi degil): "
         "'sadakat_indirim_yuzde' musterinin son 12 aylik cirosuna gore "
