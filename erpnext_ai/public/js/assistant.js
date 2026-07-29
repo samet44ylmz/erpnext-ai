@@ -158,6 +158,21 @@
 								alanlar["custom_tevkifat_kodu"]
 							);
 						} catch (e) {}
+
+						// Client Script eksi tevkifat satirini ekler ama ERPNext'in
+						// TOPLAM hesabini tetiklemez -- genel toplam eski haliyle
+						// kalir. Script'in async islemi (kod bilgisini cekmesi)
+						// bitsin diye bekleyip toplamlari yeniden hesaplatiyoruz.
+						setTimeout(() => {
+							try {
+								if (cur_frm.script_manager) {
+									cur_frm.script_manager.trigger("calculate_taxes_and_totals");
+								} else if (cur_frm.cscript && cur_frm.cscript.calculate_taxes_and_totals) {
+									cur_frm.cscript.calculate_taxes_and_totals();
+								}
+								cur_frm.refresh_fields();
+							} catch (e) {}
+						}, 900);
 					}, 1800);
 				}
 				frappe.show_alert(
