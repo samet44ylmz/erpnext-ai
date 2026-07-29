@@ -1055,7 +1055,12 @@ TOOLS_SPEC = [
         "parameters": {"type": "object", "properties": {
             "musteri": {"type": "string"},
             "urun": {"type": "string"},
-            "miktar": {"type": "integer", "description": "varsayilan 1"},
+            "miktar": {"type": "integer", "description": (
+                "COK ONEMLI: kullanicinin belirttigi sayidir. '6 aylik hizmet' "
+                "-> miktar=6. '50 lisans' -> miktar=50. '1 yillik' -> miktar=12 "
+                "(hizmette yil ay'a cevrilir). Sayiyi MUTLAKA metinden cikar, "
+                "varsayilan 1'i sadece hic sayi belirtilmediyse kullan."
+            )},
         }, "required": ["musteri", "urun"]},
     }},
     {"type": "function", "function": {
@@ -1184,6 +1189,11 @@ def _system_prompt(context=None):
         "tahmini fiyat 565 TL olurdu, ancak bu urunun guncel standart fiyati "
         "4.000 TL'ye guncellenmis; standart fiyat daha yuksek oldugu icin o "
         "esas alindi.'\n"
+        "- KRITIK: Kullanici '6 aylik', '3 ay', '1 yillik', '50 lisans', "
+        "'10 adet' gibi bir SAYI belirtirse, bu sayiyi MUTLAKA 'miktar' "
+        "parametresine koy. 'Yil' belirtilirse aya cevir (1 yil=12 ay). "
+        "Sayiyi metinden cikarmadan varsayilan (1) ile arac cagirma -- bu "
+        "yanlis sonuc uretir.\n"
         "- MIKTAR ANLAMI urun koduna gore degisir: kod 'SRV-' ile "
         "basliyorsa (hizmet -- Veritabani Yonetimi, Sistem Yonetimi vb.) "
         "miktar AY SAYISIDIR (orn: '6 aylik hizmet'). Kod 'PRM-' ile "
