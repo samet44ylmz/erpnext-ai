@@ -561,9 +561,9 @@
 		});
 	}
 
-	function sozlesme_karti(s) {
+	function sozlesme_karti(s, idx) {
 		const bilgi = SOZLESME_DURUM_BILGI[s.durum] || { etiket: s.durum || "", sinif: "eai-d-normal" };
-		return (
+		let html =
 			'<div class="eai-urun">' +
 			'<div class="eai-urun-ust">' +
 			'<span class="eai-urun-ad">' + kacisla(s.taraf || "") + "</span>" +
@@ -575,8 +575,19 @@
 			'<div class="eai-olcu"><div class="eai-olcu-etiket">Kalan sure</div>' +
 			'<div class="eai-olcu-deger' + (s.kalan_gun <= 7 ? " eai-vurgu" : "") + '">' +
 			s.kalan_gun + " gun</div></div>" +
-			"</div></div>"
-		);
+			"</div>";
+
+		if (s.yenileme_fiyat) {
+			html +=
+				'<div class="eai-gerekce">En uygun yenileme teklifi: <b>' +
+				kacisla(s.yenileme_urun_adi || "") + "</b>, " + s.yenileme_ay +
+				" ay icin <b>" + s.yenileme_fiyat + " TL</b></div>" +
+				'<button class="eai-draft-btn" data-sozlesme-idx="' + idx + '">' +
+				"Teklifi goster</button>";
+		}
+
+		html += "</div>";
+		return html;
 	}
 
 	function sozlesme_popup_goster(res) {
@@ -594,8 +605,8 @@
 		let govde = '<div class="eai-popup-ozet">' + bicimle(res.mesaj) + "</div>";
 		if (liste.length) {
 			govde += '<div class="eai-popup-liste">';
-			liste.forEach(function (s) {
-				govde += sozlesme_karti(s);
+			liste.forEach(function (s, idx) {
+				govde += sozlesme_karti(s, idx);
 			});
 			govde += "</div>";
 		}
@@ -622,6 +633,36 @@
 		}
 		box.querySelector(".eai-popup-close").onclick = kapat;
 		box.querySelector("#eai-sozlesme-dismiss").onclick = kapat;
+
+		// "Teklifi goster" butonlari -- hesaplanmis yenileme fiyatiyla
+		// dogrudan Quotation taslagi acar.
+		box.querySelectorAll("[data-sozlesme-idx]").forEach(function (btn) {
+			btn.onclick = function () {
+				const idx = parseInt(btn.getAttribute("data-sozlesme-idx"), 10);
+				const s = liste[idx];
+				if (!s || !s.yenileme_urun) return;
+				kapat();
+				const bugun_iso = new Date().toISOString().slice(0, 10);
+				const bitis_dt = new Date();
+				bitis_dt.setMonth(bitis_dt.getMonth() + (s.yenileme_ay || 12));
+				const bitis_iso = bitis_dt.toISOString().slice(0, 10);
+				form_taslagi_ac({
+					doctype: "Quotation",
+					alanlar: {
+						quotation_to: "Customer",
+						party_name: s.taraf,
+						items: [{
+							item_code: s.yenileme_urun,
+							qty: 1,
+							rate: s.yenileme_fiyat,
+							aciklama: (s.yenileme_urun_adi || "") + " — Yenileme (" + s.yenileme_ay + " Ay)",
+							hizmet_baslangic: bugun_iso,
+							hizmet_bitis: bitis_iso,
+						}],
+					},
+				});
+			};
+		});
 		box.querySelector("#eai-sozlesme-goster").onclick = function () {
 			kapat();
 			try {
