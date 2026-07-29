@@ -549,6 +549,46 @@ def _miktar_indirim_yuzdesi(adet):
     return 0
 
 
+SEKTOR_FIYAT_AYARI = {
+    # yuzde: pozitif = zam, negatif = indirim (taban fiyata uygulanir)
+    "Finans": 8,
+    "Sigorta": 5,
+    "Yatirim": 5,
+    "Enerji": 3,
+    "Saglik": 0,
+    "Teknoloji": 0,
+    "Kamu": -8,
+    "Lojistik": -3,
+    "FMCG": -5,
+}
+
+SEKTOR_GEREKCE = {
+    "Finans": "regule sektor, yuksek uyum/guvenlik gereksinimleri ve buyuk butceler",
+    "Sigorta": "regule sektor, orta duzey uyum maliyeti",
+    "Yatirim": "regule sektor, benzer uyum gereksinimleri",
+    "Enerji": "kritik altyapi, yuksek guvenilirlik beklentisi",
+    "Saglik": "standart uygulama, ek bir sektorel ayar yok",
+    "Teknoloji": "standart uygulama, ek bir sektorel ayar yok",
+    "Kamu": "ihale/kamu alim mevzuati, rekabetci ve dusuk marjli surec",
+    "Lojistik": "rekabetci, fiyata duyarli sektor",
+    "FMCG": "buyuk olcekli firmalar, guclu pazarlik gucu",
+}
+
+
+def _sektor_ayari(musteri):
+    """
+    Musterinin Customer Group'una (sektorune) gore taban fiyat ayari.
+    Donus: (yuzde, sektor_adi, gerekce_metni)
+    """
+    try:
+        grup = frappe.db.get_value("Customer", musteri, "customer_group")
+    except Exception:
+        grup = None
+    yuzde = SEKTOR_FIYAT_AYARI.get(grup, 0)
+    gerekce = SEKTOR_GEREKCE.get(grup, "")
+    return yuzde, grup, gerekce
+
+
 def _sadakat_indirim_yuzdesi(ciro):
     """Son 12 aylik ciroya gore kademeli sadakat indirimi (%)."""
     if ciro >= 300000:
@@ -804,6 +844,13 @@ def _tool_fiyat_onerisi(args):
             "not": "Ne gecmis fiyat ne standart fiyat tanimli. Birim fiyati siz belirtmelisiniz.",
         }, ensure_ascii=False, default=str)
 
+    # --- 1.5) SEKTOR AYARI: musterinin sektorune (Customer Group) gore
+    # taban fiyat yukari/asagi ayarlanir -- indirimlerden ONCE uygulanir.
+    sektor_yuzde, sektor_grubu, sektor_gerekce = _sektor_ayari(musteri)
+    taban_fiyat_sektor_oncesi = taban_fiyat
+    if sektor_yuzde:
+        taban_fiyat = round(taban_fiyat * (1 + sektor_yuzde / 100.0), 2)
+
     # --- 2) INDIRIMLER: TOPLAM tutar uzerinden, ust uste ---
     toplam_oncesi = round(taban_fiyat * miktar, 2)
 
@@ -824,6 +871,10 @@ def _tool_fiyat_onerisi(args):
     sonuc = {
         "gecmis_var": gecmis_var,
         "miktar": miktar,
+        "taban_birim_fiyat_sektor_oncesi": taban_fiyat_sektor_oncesi,
+        "sektor_ayari_yuzde": sektor_yuzde,
+        "sektor_grubu": sektor_grubu,
+        "sektor_gerekce": sektor_gerekce,
         "taban_birim_fiyat": taban_fiyat,
         "toplam_oncesi_indirim": toplam_oncesi,
         "sadakat_cirosu_12ay": round(ciro_12ay, 2),
@@ -1151,6 +1202,12 @@ def _system_prompt(context=None):
         "- 'potansiyel musteri', 'aday musteri' gibi ifadeler Lead demektir; "
         "'musteri_turu': 'Lead' donerse bunun henuz kayitli musteri olmadigini, "
         "gecmis alim olamayacagini ve standart fiyat onerildigini belirt.\n"
+        "- 'sektor_ayari_yuzde' sifir degilse: musterinin sektorune "
+        "('sektor_grubu') gore taban fiyatin ayarlandigini belirt. "
+        "'sektor_gerekce' alanindaki bilgiyi TEMEL AL ama BIREBIR KOPYALAMA -- "
+        "ayni anlami HER SEFERINDE FARKLI kelime ve cumle yapisiyla, dogal "
+        "bir sekilde ifade et. Sebep hep ayni kalsin (uydurma), ama ifade "
+        "bicimi tekrar etmesin.\n"
         "\n"
         "COK ONEMLI - DOGRULUK KURALI:\n"
         "- SADECE gercekten cagirdigin araclarin sonucuna dayanarak konus.\n"
@@ -1456,6 +1513,148 @@ def kritik_stok_kontrol():
         "urun_sayisi": len(esik_alti),
         "urunler": detaylar,
     }
+
+
+@frappe.whitelist()
+def sozlesme_kontrolu():
+    """
+    Bitis tarihi yaklasan (60 gun icindeki) sozlesmeleri bulur, kademeli
+    aciliyet (kritik <=7 gun, yakin <=30 gun, planla <=60 gun) belirler,
+    AI'dan kisa uyari metni uretir. Cana TEK kayit dusurur.
+    ERPNext'in hazir 'Contract' DocType'ini kullanir -- yeni bir yapi
+    eklemez, sadece mevcut sozlesme kayitlarini okur.
+    SALT-OKUNUR: hicbir kayit olusturmaz/degistirmez.
+    Donus: {"var": bool, "mesaj": str, "sozlesmeler": [...]}
+    """
+    try:
+        if not frappe.db.exists("DocType", "Contract"):
+            return {"var": False, "mesaj": "", "sozlesmeler": []}
+    except Exception:
+        return {"var": False, "mesaj": "", "sozlesmeler": []}
+
+    bugun = date.today()
+    ust_sinir = (bugun + timedelta(days=60)).isoformat()
+
+    try:
+        meta = frappe.get_meta("Contract")
+        alan_adlari = {df.fieldname for df in meta.fields}
+    except Exception:
+        return {"var": False, "mesaj": "", "sozlesmeler": []}
+
+    if "end_date" not in alan_adlari:
+        return {"var": False, "mesaj": "", "sozlesmeler": []}
+
+    secilecek_alanlar = ["name", "end_date"]
+    if "party_name" in alan_adlari:
+        secilecek_alanlar.append("party_name")
+
+    filtreler = {"end_date": ["between", [bugun.isoformat(), ust_sinir]]}
+    if "status" in alan_adlari:
+        filtreler["status"] = ["not in", ["Inactive", "Cancelled"]]
+
+    try:
+        sozlesmeler_ham = frappe.get_all(
+            "Contract", filters=filtreler, fields=secilecek_alanlar,
+            order_by="end_date asc", limit_page_length=50,
+        )
+    except Exception:
+        try:
+            sozlesmeler_ham = frappe.get_all(
+                "Contract",
+                filters={"end_date": ["between", [bugun.isoformat(), ust_sinir]]},
+                fields=secilecek_alanlar, order_by="end_date asc", limit_page_length=50,
+            )
+        except Exception:
+            return {"var": False, "mesaj": "", "sozlesmeler": []}
+
+    if not sozlesmeler_ham:
+        return {"var": False, "mesaj": "", "sozlesmeler": []}
+
+    liste = []
+    for s in sozlesmeler_ham:
+        try:
+            bitis = frappe.utils.getdate(s.get("end_date"))
+        except Exception:
+            continue
+        kalan_gun = (bitis - bugun).days
+        if kalan_gun <= 7:
+            durum = "kritik"
+        elif kalan_gun <= 30:
+            durum = "yakin"
+        else:
+            durum = "planla"
+        liste.append({
+            "sozlesme": s.get("name"),
+            "taraf": s.get("party_name") or s.get("name"),
+            "bitis_tarihi": str(bitis),
+            "kalan_gun": kalan_gun,
+            "durum": durum,
+        })
+
+    if not liste:
+        return {"var": False, "mesaj": "", "sozlesmeler": []}
+
+    ozet_satirlari = [
+        f"{l['taraf']}: {l['kalan_gun']} gun sonra ({l['bitis_tarihi']}) bitiyor"
+        for l in liste
+    ]
+    veri = "\n".join(ozet_satirlari)
+    mesaj = None
+    try:
+        messages = [
+            {"role": "system", "content": (
+                "Sen bir sozlesme/lisans takip asistanisin. Bitis tarihi "
+                "yaklasan sozlesmeler icin kisa, net bir Turkce uyari metni "
+                "yaz. MUTLAKA taraf adini belirt. En yakin bitecekten "
+                "baslayarak anlat. 2-3 cumleyi gecme. JSON veya teknik "
+                "detay yazma, sadece dogal uyari metni."
+            )},
+            {"role": "user", "content": f"Yaklasan sozlesmeler:\n{veri}"},
+        ]
+        key = _groq_key()
+        if key:
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+            body = {"model": _groq_model(), "messages": messages, "temperature": 0.2}
+            r = requests.post(GROQ_URL, headers=headers, json=body, timeout=30)
+            data = r.json()
+            if "choices" in data:
+                mesaj = (data["choices"][0]["message"].get("content") or "").strip()
+    except Exception:
+        mesaj = None
+
+    if not mesaj:
+        adlar = ", ".join(f"{l['taraf']} ({l['kalan_gun']} gun)" for l in liste)
+        mesaj = f"Yaklasan sozlesme yenilemeleri: {adlar}."
+
+    try:
+        kullanici = frappe.session.user
+        ilk_isimler = ", ".join(l["taraf"] for l in liste[:3])
+        subject = f"Sozlesme Uyarisi: {ilk_isimler} — yenileme yaklasiyor"
+        mevcut = frappe.get_all(
+            "Notification Log",
+            filters={"for_user": kullanici, "subject": subject, "read": 0},
+            limit_page_length=1,
+        )
+        if not mevcut:
+            log = frappe.new_doc("Notification Log")
+            log.subject = subject
+            log.email_content = mesaj
+            log.for_user = kullanici
+            log.type = "Alert"
+            try:
+                meta2 = frappe.get_meta("Notification Log")
+                if meta2.get_field("link"):
+                    log.link = "/app/contract"
+                else:
+                    log.document_type = "Contract"
+            except Exception:
+                pass
+            log.insert(ignore_permissions=True)
+            frappe.db.commit()
+    except Exception:
+        pass
+
+    return {"var": True, "mesaj": mesaj, "sozlesmeler": liste}
 
 
 @frappe.whitelist()
