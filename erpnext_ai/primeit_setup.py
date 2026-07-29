@@ -222,7 +222,7 @@ def urunleri_olustur():
             it = frappe.new_doc("Item")
             it.item_code = kod
             it.item_name = ad
-            it.item_group = "Services" if frappe.db.exists("Item Group", "Services") else "All Item Groups"
+            it.item_group = "Bütün Ürün Grupları"
             it.is_stock_item = 0  # HIZMET -- stok takibi yok
             it.stock_uom = "Nos"
             it.standard_rate = fiyat
