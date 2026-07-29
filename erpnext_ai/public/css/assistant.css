@@ -649,3 +649,28 @@
   .eai-ss-detay { display: none; }
   .eai-ss-fiyat { min-width: 70px; font-size: 12px; }
 }
+
+/* Teklif Uyarilari sayfasi -- satir + altinda gerekce paragrafi */
+.eai-ss-entry {
+  background: #fff;
+  border: 1px solid #E3E6EC;
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.eai-ss-entry .eai-ss-satir {
+  border: 0;
+  border-radius: 0;
+}
+.eai-ss-entry:hover {
+  border-color: #D3D8E0;
+}
+.eai-ss-gerekce {
+  padding: 2px 15px 12px 93px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #6B7484;
+  border-top: 1px dashed #EDEFF3;
+  margin-top: -1px;
+  padding-top: 8px;
+}
