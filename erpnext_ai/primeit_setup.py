@@ -538,6 +538,7 @@ def test_verisi_50_olustur():
     import random
     import frappe.utils
     from datetime import timedelta
+    from erpnext_ai.erpnext_ai.api import _standart_fiyat
 
     random.seed(42)
     sirket = _sirket()
@@ -617,6 +618,7 @@ def test_verisi_50_olustur():
             bitis_tarihi = bugun + timedelta(days=bitis_gun)
             baslangic_tarihi = bugun - timedelta(days=365 - bitis_gun)
 
+            urun_adi_c = dict((k, ad) for (k, ad, t, f) in URUNLER).get(urun_kodu, urun_kodu)
             c = frappe.new_doc("Contract")
             c.party_type = "Customer"
             c.party_name = musteri
@@ -624,6 +626,7 @@ def test_verisi_50_olustur():
             c.start_date = baslangic_tarihi
             c.end_date = bitis_tarihi
             c.is_signed = 1
+            c.contract_terms = f"{urun_adi_c} hizmeti/urunu icin standart sozlesme sartlari."
             c.insert(ignore_permissions=True)
             frappe.db.commit()
             sozlesme_sayisi += 1
