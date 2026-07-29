@@ -678,7 +678,7 @@
 	function hizmet_fiyat_guncelle(frm, cdt, cdn) {
 		const row = locals[cdt] && locals[cdt][cdn];
 		if (!row || !row.item_code) return;
-		if (row.item_code.indexOf("SRV-") !== 0) return; // sadece hizmetlerde
+		// artik urun/hizmet ayrimi yok -- tarih girilen HER satirda calisir
 		if (!row.custom_hizmet_baslangic || !row.custom_hizmet_bitis) return;
 
 		const musteri = frm.doc.customer || frm.doc.party_name;
