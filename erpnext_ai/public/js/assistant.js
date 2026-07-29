@@ -549,14 +549,20 @@
 		planla: { etiket: "Planlanmali", sinif: "eai-d-normal" },
 	};
 
-	// Basit bellek bayragi -- F5/yeni sekme (script sifirdan yuklenir) ->
-	// tekrar cikar. Uygulama ici gezinme (SPA route degisimi) -> script
-	// yeniden yuklenmedigi icin bu deger zaten kalir, tekrar cikmaz.
-	let eaiSozlesmePopupGosterildi = false;
+	// sessionStorage: bu tarayici sekmesi kapanana kadar bir kez gosterilir.
+	// Sayfa gecisleri bazen tam script yenilemesi tetikledigi icin bellek
+	// degiskeni yetersiz kaliyordu -- bu daha guvenilir.
+	const EAI_OTURUM_ANAHTARI = "eai_sozlesme_popup_gosterildi";
 
 	function sozlesme_kontrolu(zorla) {
 		if (!window.frappe || !frappe.call) return;
-		if (!zorla && eaiSozlesmePopupGosterildi) return;
+		if (!zorla) {
+			try {
+				if (sessionStorage.getItem(EAI_OTURUM_ANAHTARI)) return;
+			} catch (e) {
+				// sessionStorage yoksa (gizli sekme vb.) sinirlama yapma
+			}
+		}
 
 		frappe.call({
 			method: "erpnext_ai.erpnext_ai.api.sozlesme_kontrolu",
@@ -565,7 +571,9 @@
 				const res = (r && r.message) || {};
 				if (res.var && res.mesaj) {
 					sozlesme_popup_goster(res);
-					eaiSozlesmePopupGosterildi = true;
+					try {
+						sessionStorage.setItem(EAI_OTURUM_ANAHTARI, "1");
+					} catch (e) {}
 				}
 			},
 			error: function () {},
