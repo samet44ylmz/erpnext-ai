@@ -226,7 +226,7 @@
 		hos.innerHTML =
 			"Sorabilecekleriniz:<br>" +
 			"&bull;&nbsp;<b>bu ayki toplam satis</b> &mdash; veri sorgulari<br>" +
-			"&bull;&nbsp;<b>ne siparis etmeliyim</b> &mdash; stok analizi<br>" +
+			"&bull;&nbsp;<b>Enerjisa'ya 6 aylik DbRunner icin teklif hazirla</b> &mdash; teklif taslagi<br>" +
 			"&bull;&nbsp;<b>satis muduru icin is tanimi yaz</b> &mdash; IK metinleri<br>" +
 			"&bull;&nbsp;<b>fatura kes</b> &mdash; form taslagi" +
 			'<div class="eai-note">Uretilen her sey taslaktir; ' +
