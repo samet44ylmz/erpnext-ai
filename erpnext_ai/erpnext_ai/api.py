@@ -192,6 +192,8 @@ def _tool_stok_durumu(args):
     """
     depo = args.get("depo")  # opsiyonel; verilmezse tum depolar
     try:
+        # 0) Kac urun oldugunu once ogren -- kirpma sessiz kalmasin
+        toplam_urun_sayisi = frappe.db.count("Item", filters={"disabled": 0, "is_stock_item": 1})
         # 1) Urunlerin yeniden siparis ayarlarini cek (Item + Item Reorder)
         urunler = frappe.get_list(
             "Item",
@@ -260,7 +262,14 @@ def _tool_stok_durumu(args):
             "durum": durum,
         })
 
-    return json.dumps(sonuc, ensure_ascii=False, default=str)
+    cikti = {"urunler": sonuc}
+    if toplam_urun_sayisi > len(urunler):
+        cikti["uyari"] = (
+            f"DIKKAT: Sistemde {toplam_urun_sayisi} stoklu urun var, sadece "
+            f"ilk {len(urunler)} tanesi analiz edildi. Kalan urunler hic "
+            "kontrol edilmedi."
+        )
+    return json.dumps(cikti, ensure_ascii=False, default=str)
 
 
 
@@ -321,6 +330,7 @@ def _tool_stok_analiz(args):
 
     # 3) Urunler + stok + esik
     try:
+        toplam_urun_sayisi = frappe.db.count("Item", filters={"disabled": 0, "is_stock_item": 1})
         urunler = frappe.get_list(
             "Item",
             filters={"disabled": 0, "is_stock_item": 1},
@@ -451,11 +461,18 @@ def _tool_stok_analiz(args):
                "normal": 4, "fazla_stok": 5, "olu_stok": 6, "hareketsiz": 7}
     sonuc.sort(key=lambda x: oncelik.get(x["durum"], 9))
 
-    return json.dumps({
+    cikti = {
         "gecmis_gun": gecmis_gun,
         "hedef_gun": hedef_gun,
         "urunler": sonuc,
-    }, ensure_ascii=False, default=str)
+    }
+    if toplam_urun_sayisi > len(urunler):
+        cikti["uyari"] = (
+            f"DIKKAT: Sistemde {toplam_urun_sayisi} stoklu urun var, sadece "
+            f"ilk {len(urunler)} tanesi analiz edildi. Kalan urunler hic "
+            "kontrol edilmedi."
+        )
+    return json.dumps(cikti, ensure_ascii=False, default=str)
 
 
 # ------------------------------------------------------------------
@@ -519,7 +536,16 @@ def _evds_deger(seri, hedef_tarih):
         except Exception:
             pass
         return deger
-    except Exception:
+    except Exception as e:
+        # ONCEDEN sessizce yutuluyordu -- EVDS bir ay bozuk olsa kimse
+        # fark etmezdi. Artik Frappe Error Log'a duser, Admin gorebilir.
+        try:
+            frappe.log_error(
+                title="EVDS baglanti hatasi",
+                message=f"seri={seri}, tarih={hedef_tarih}, hata={str(e)[:300]}",
+            )
+        except Exception:
+            pass
         return None
 
 
@@ -531,6 +557,14 @@ def _evds_yuzde_degisim(seri, eski_tarih):
         return None
     return (bugun - eski) / eski * 100.0
 
+
+# Fiyat, maliyetin sadece UZERINDE olmasi yetmez -- bu kadar MINIMUM kar
+# marji da olmali. Ornek: 0.15 = maliyetin en az %15 uzerinde olmali.
+MIN_MARJ = 0.15
+
+# Toplam indirim (sektor + sadakat) bu yuzdeyi gecerse, AI onay istemeden
+# taslak acamaz -- yonetici onayi gerektigini belirtir.
+ISKONTO_ONAY_ESIGI = 15  # yuzde
 
 SEKTOR_FIYAT_AYARI = {
     # yuzde: pozitif = zam, negatif = indirim (taban fiyata uygulanir)
@@ -749,29 +783,40 @@ def _tool_fiyat_onerisi(args):
         err = _guard("Sales Invoice")
         if err:
             return err
+        # ONCE musterinin faturalarini bul (kucuk, sinirli kume), SONRA o
+        # faturalardaki urun satirina bak. Eskiden TERSI yapiliyordu (once
+        # urunun TUM satislarini 200 satirla sinirlayip sonra musteriye gore
+        # filtreleme) -- cok satan bir urunde musterinin kaydi o 200 satirin
+        # disinda kalip "gecmis yok" YANLIS sonucu verebiliyordu.
         try:
-            satirlar = frappe.get_all(
-                "Sales Invoice Item",
-                filters={"item_code": urun},
-                fields=["parent", "rate"],
+            musteri_faturalari = frappe.get_all(
+                "Sales Invoice",
+                filters={"customer": musteri, "docstatus": 1},
+                fields=["name", "posting_date"],
+                order_by="posting_date desc",
                 limit_page_length=200,
             )
         except Exception as e:
-            return f"Sorgu hatasi: {str(e)[:200]}"
+            return f"Fatura sorgusu hatasi: {str(e)[:200]}"
 
         faturalar = []
-        if satirlar:
-            parent_adlar = list({s["parent"] for s in satirlar})
+        satirlar = []
+        if musteri_faturalari:
+            fatura_adlari = [f["name"] for f in musteri_faturalari]
             try:
-                faturalar = frappe.get_all(
-                    "Sales Invoice",
-                    filters={"name": ["in", parent_adlar], "customer": musteri, "docstatus": 1},
-                    fields=["name", "posting_date"],
-                    order_by="posting_date desc",
-                    limit_page_length=1,
+                kalemler = frappe.get_all(
+                    "Sales Invoice Item",
+                    filters={"item_code": urun, "parent": ["in", fatura_adlari]},
+                    fields=["parent", "rate"],
+                    limit_page_length=0,
                 )
             except Exception as e:
-                return f"Fatura sorgusu hatasi: {str(e)[:200]}"
+                return f"Sorgu hatasi: {str(e)[:200]}"
+
+            if kalemler:
+                kalem_parent_adlari = {k["parent"] for k in kalemler}
+                faturalar = [f for f in musteri_faturalari if f["name"] in kalem_parent_adlari][:1]
+                satirlar = kalemler
 
         if faturalar:
             son_fatura = faturalar[0]
@@ -838,23 +883,35 @@ def _tool_fiyat_onerisi(args):
     if sektor_yuzde:
         taban_fiyat = round(taban_fiyat * (1 + sektor_yuzde / 100.0), 2)
 
-    # --- 2) TOPLAM tutar: hizmette YILLIK fiyattan ORANLI hesaplanir,
-    # urunde (lisans/adet) direkt carpilir. ---
-    # 'sure_bazli' acikca verilmisse onu esas al (manuel tarih girisinde
-    # oldugu gibi); verilmemisse urun koduna gore karar ver (AI akisi).
+    # --- 2) TOPLAM tutar: SURE BAZLI ise urunin GERCEK 'Fiyat Periyodu'
+    # alanina bakilir (Yillik/Aylik) -- artik SRV-/PRM- onekinden VARSAYIM
+    # yapilmiyor. Alan bos/tanimsizsa Yillik varsayilir (eski davranisla
+    # ayni, geriye donuk uyumlu).
     if "sure_bazli" in args:
         hizmet_mi_hesap = bool(args.get("sure_bazli"))
     else:
         hizmet_mi_hesap = urun.startswith("SRV-")
+
     if hizmet_mi_hesap:
-        # taban_fiyat burada YILLIK kabul edilir; miktar = ay sayisi.
-        toplam_oncesi = round(taban_fiyat * (miktar / 12.0), 2)
+        try:
+            periyot = frappe.db.get_value("Item", urun, "custom_fiyat_periyodu")
+        except Exception:
+            periyot = None
+        if periyot == "Aylik":
+            # standart_rate ZATEN aylik -- oranlamaya (12'ye bolmeye) GEREK YOK.
+            toplam_oncesi = round(taban_fiyat * miktar, 2)
+        else:
+            # "Yillik" veya alan hic isaretlenmemis -- eski/varsayilan davranis.
+            toplam_oncesi = round(taban_fiyat * (miktar / 12.0), 2)
     else:
         toplam_oncesi = round(taban_fiyat * miktar, 2)
 
-    # --- 3) INDIRIMLER: TOPLAM tutar uzerinden, ust uste ---
-
-    if tur == "Customer":
+    # --- 3) INDIRIMLER: TOPLAM tutar uzerinden ---
+    # KURAL: sektor zaten INDIRIM veriyorsa (negatif ayar -- Kamu, Lojistik,
+    # FMCG gibi), sadakat indirimi UYGULANMAZ. Boylece iki indirim ust uste
+    # binip fiyati gereksiz/riskli sekilde dusurmez. Sektor notr/prim ise
+    # (0 veya pozitif) sadakat indirimi normal calisir.
+    if tur == "Customer" and sektor_yuzde >= 0:
         ciro_12ay = _musteri_son_12ay_cirosu(musteri)
         sadakat_yuzde = _sadakat_indirim_yuzdesi(ciro_12ay)
     else:
@@ -866,6 +923,39 @@ def _tool_fiyat_onerisi(args):
     toplam_nihai = ara_toplam  # toptan/buyuk siparis indirimi KALDIRILDI
 
     onerilen_birim_fiyat = round(toplam_nihai / miktar, 2) if miktar else toplam_nihai
+
+    # --- MALIYET KONTROLU: fiyat, maliyet + MINIMUM MARJ'in altina dustu mu? ---
+    # Sadece "maliyetin ustunde mi" yetmez -- makul bir kar marji da sart.
+    # Sektor/sadakat indirimleri ust uste binince fiyat sessizce bu sinirin
+    # altina duşebilir; bunu ASLA sessiz gecmeyiz.
+    zarar_riski = False
+    maliyet = None
+    try:
+        maliyet = frappe.db.get_value("Item", urun, "custom_maliyet")
+        if maliyet:
+            maliyet = float(maliyet)
+            # ONEMLI: bu da ayni "Fiyat Periyodu" alanina gore hesaplanir --
+            # onceden burada da SRV- onekinden varsayim yapiliyordu, ayni
+            # risk (12 kat sapma) maliyet tarafinda da vardi.
+            if hizmet_mi_hesap and periyot != "Aylik":
+                karsilastirma_maliyet = round(maliyet * (miktar / 12.0), 2)
+            elif hizmet_mi_hesap and periyot == "Aylik":
+                karsilastirma_maliyet = round(maliyet * miktar, 2)
+            else:
+                karsilastirma_maliyet = maliyet * miktar
+            gerekli_minimum = round(karsilastirma_maliyet * (1 + MIN_MARJ), 2)
+            if toplam_nihai < gerekli_minimum:
+                zarar_riski = True
+    except Exception:
+        pass
+
+    # --- ISKONTO TAVANI: toplam indirim cok yuksekse onay istensin ---
+    toplam_indirim_yuzde = 0.0
+    if sektor_yuzde < 0:
+        toplam_indirim_yuzde += abs(sektor_yuzde)
+    if sadakat_yuzde:
+        toplam_indirim_yuzde += sadakat_yuzde
+    onay_gerekli = toplam_indirim_yuzde > ISKONTO_ONAY_ESIGI
 
     sonuc = {
         "gecmis_var": gecmis_var,
@@ -880,6 +970,10 @@ def _tool_fiyat_onerisi(args):
         "sadakat_indirim_yuzde": sadakat_yuzde,
         "toplam_nihai": toplam_nihai,
         "onerilen_fiyat": onerilen_birim_fiyat,
+        "zarar_riski": zarar_riski,
+        "maliyet": maliyet,
+        "toplam_indirim_yuzde": round(toplam_indirim_yuzde, 1),
+        "onay_gerekli": onay_gerekli,
     }
     sonuc.update(detay_gecmis)
     return json.dumps(sonuc, ensure_ascii=False, default=str)
@@ -928,6 +1022,30 @@ def _turkey_tax_sablonu():
         )
     except Exception:
         return None
+
+
+def _kdv_orani_al(sablon_adi):
+    """
+    Vergi sablonunun GERCEK oranini okur (sabit %18 YANLISTI -- Temmuz 2023'ten
+    beri Turkiye'de standart oran %20, ayrica urune gore %1/%10/%20 da olabilir).
+    Sablon/oran bulunamazsa None doner -- boyle durumda tevkifat hesaplanmaz,
+    kullaniciya "oran bulunamadi, elle kontrol edin" denir; YANLIS oran ASLA
+    varsayilmaz.
+    """
+    if not sablon_adi:
+        return None
+    try:
+        satirlar = frappe.get_all(
+            "Sales Taxes and Charges Template Detail",
+            filters={"parent": sablon_adi},
+            fields=["rate"],
+            limit_page_length=1,
+        )
+        if satirlar and satirlar[0].get("rate") is not None:
+            return float(satirlar[0]["rate"])
+    except Exception:
+        pass
+    return None
 
 
 def _tool_fatura_taslagi(args):
@@ -1021,17 +1139,30 @@ def _tool_fatura_taslagi(args):
             # kendisi hesaplayip ekliyor. Biz de yazsaydik cift hesap ve
             # cakisma olurdu; ayrica eksi vergi satirini biz eklemiyorduk.
             alanlar["custom_tevkifat_kodu"] = bulunan["kod"]
-            # bilgi amacli tahmini tutar (AI aciklamasi icin, forma yazilmaz)
-            kdv_orani = 18.0
-            kdv_tutari = round(toplam_fiyat * kdv_orani / 100.0, 2)
-            tahmini_tevkifat = round(kdv_tutari * bulunan["oran"] / 100.0, 2)
-            tevkifat_bilgi = {
-                "kod": bulunan["kod"],
-                "aciklama": bulunan["aciklama"],
-                "oran": bulunan["oran"],
-                "tahmini_tevkifat_tutari": tahmini_tevkifat,
-                "not": "Tutar ve vergi satiri formda otomatik hesaplanir.",
-            }
+            # bilgi amacli tahmini tutar (AI aciklamasi icin, forma yazilmaz).
+            # KDV orani ARTIK SABIT DEGIL -- gercek sablondan okunur (onceden
+            # yanlislikla %18 sabitlenmisti; 2023'ten beri standart %20).
+            sablon_adi = _turkey_tax_sablonu()
+            kdv_orani = _kdv_orani_al(sablon_adi)
+            if kdv_orani is not None:
+                kdv_tutari = round(toplam_fiyat * kdv_orani / 100.0, 2)
+                tahmini_tevkifat = round(kdv_tutari * bulunan["oran"] / 100.0, 2)
+                tevkifat_bilgi = {
+                    "kod": bulunan["kod"],
+                    "aciklama": bulunan["aciklama"],
+                    "oran": bulunan["oran"],
+                    "kdv_orani_kullanilan": kdv_orani,
+                    "tahmini_tevkifat_tutari": tahmini_tevkifat,
+                    "not": "Tutar ve vergi satiri formda otomatik hesaplanir.",
+                }
+            else:
+                tevkifat_bilgi = {
+                    "kod": bulunan["kod"],
+                    "aciklama": bulunan["aciklama"],
+                    "oran": bulunan["oran"],
+                    "not": "KDV orani sablondan okunamadi, tahmini tutar "
+                           "hesaplanamadi. Formdaki gercek tutari kontrol edin.",
+                }
         else:
             tevkifat_bilgi = {
                 "not": f"'{tevkifat_amaci}' icin uygun bir tevkifat kodu bulunamadi. "
@@ -1347,15 +1478,23 @@ def _system_prompt(context=None):
         "- KDV'ye 'hayir' denirse tevkifat SORULMAZ (tevkifat KDV'nin bir "
         "kismini kesmek demektir, KDV yoksa tevkifat da olamaz). Direkt "
         "kdv_dahil=false, tevkifatli=false ile fatura_taslagi'ni cagir.\n"
+        "- 'zarar_riski': true donerse (fiyat maliyetin altinda) COK ONEMLI: "
+        "taslak sunmadan ONCE YUKSEK SESLE uyar -- 'DIKKAT: Bu fiyat (X TL) "
+        "urunun maliyetinin (Y TL) altinda, zararina satis riski var!' de ve "
+        "'Yine de devam edeyim mi?' diye SOR. Onay gelmeden taslak acma.\n"
         "- sure_bazli karari URUN KODUNA DEGIL kullanicinin sozune bakar: "
-        "'ay/yil' gecerse true (miktar=ay sayisi, yillik fiyattan oranli, "
-        "satirda adet=1, tarih alanlari dolar). 'adet/lisans' gecerse false "
-        "(birim x adet). Belirsizse sor.\n"
+        "'ay/yil' gecerse true (miktar=ay sayisi). 'adet/lisans' gecerse false "
+        "(birim x adet). Belirsizse sor. Yillik/aylik oranlama Item'in KENDI "
+        "'Fiyat Periyodu' alanindan okunur (varsayilan Yillik) -- kod tahmin "
+        "etmez, veriye bakar.\n"
         "- Sayiyi ('6 aylik', '50 lisans') MUTLAKA miktar'a koy. Yil -> ay (1 yil=12).\n"
         "- Aciklarken belirt: gecmis fiyat + enflasyon/kur farki, sektor ayari "
         "(sektor_gerekce'yi temel al ama her seferinde FARKLI kelimelerle anlat), "
         "sadakat indirimi, nihai tutar. Veri yoksa durustce soyle.\n"
         "- Lead'de gecmis/sadakat olmaz, standart fiyat kullanilir.\n"
+        "- Sektor NEGATIF (indirim) ise sadakat indirimi HIC UYGULANMAZ, "
+        "cirosu yuksek olsa bile 0 cikar -- bu bir hata degil, kural boyle "
+        "(iki indirim ust uste binmesin diye). Sorulursa boyle acikla.\n"
         "\n"
         "IK METINLERI:\n"
         "- Is tanimi: Pozisyon Ozeti, Temel Sorumluluklar (5-7), Aranan "
@@ -1366,7 +1505,9 @@ def _system_prompt(context=None):
         "\n"
         "STOK: 'stok_analiz' kullan. Her urun icin kalan gun, aylik satis, "
         "onerilen siparis ve NEDEN. Aciliyet sirasiyla. fazla_stok/olu_stok'ta "
-        "siparis ONERME. Satis verisi yoksa/guven dusukse belirt.\n"
+        "siparis ONERME. Satis verisi yoksa/guven dusukse belirt. "
+        "'uyari' alani varsa (kirpilmis veri) MUTLAKA kullaniciya aktar, "
+        "gizleme.\n"
         "\n"
         "DOGRULUK (KRITIK):\n"
         "- Sadece GERCEKTEN cagirdigin araclarin sonucuna dayan.\n"
@@ -1438,7 +1579,17 @@ def _groq_call(messages):
                 continue
             return data
         return data
-    return last or {"error": {"message": "Bilinmeyen hata"}}
+    sonuc = last or {"error": {"message": "Bilinmeyen hata"}}
+    # Kullanici sohbette bir hata mesaji goruyor ama bu ADMIN icin de
+    # gorunur olmali -- onceden sadece kullaniciya gidiyordu, log yoktu.
+    try:
+        frappe.log_error(
+            title="Groq API hatasi (tum denemeler basarisiz)",
+            message=str(sonuc.get("error"))[:500],
+        )
+    except Exception:
+        pass
+    return sonuc
 
 
 @frappe.whitelist()
@@ -1562,8 +1713,9 @@ def kritik_stok_kontrol():
         # analiz hic calismadiysa klasik esik kontrolune don
         try:
             basit = json.loads(_tool_stok_durumu({}))
-            if isinstance(basit, list):
-                esik_alti = [u for u in basit if u.get("durum") == "esik_altinda"]
+            basit_liste = basit.get("urunler", []) if isinstance(basit, dict) else basit
+            if isinstance(basit_liste, list):
+                esik_alti = [u for u in basit_liste if u.get("durum") == "esik_altinda"]
         except Exception:
             esik_alti = []
 
@@ -1701,7 +1853,13 @@ def _fiyat_ozet_sadelestir(fiyat_data):
         "sadakat_indirim_yuzde": fiyat_data.get("sadakat_indirim_yuzde"),
         "kullanilan_faktor": fiyat_data.get("kullanilan_faktor"),
         "toplam_nihai": fiyat_data.get("toplam_nihai"),
+        "zarar_riski": fiyat_data.get("zarar_riski"),
+        "onay_gerekli": fiyat_data.get("onay_gerekli"),
     }
+    if fiyat_data.get("onay_gerekli"):
+        sade["toplam_indirim_yuzde"] = fiyat_data.get("toplam_indirim_yuzde")
+    if fiyat_data.get("zarar_riski"):
+        sade["maliyet"] = fiyat_data.get("maliyet")
     if fiyat_data.get("gecmis_var"):
         sade["eski_fiyat"] = fiyat_data.get("eski_fiyat")
         sade["eski_tarih"] = fiyat_data.get("eski_tarih")
@@ -1780,10 +1938,15 @@ def sozlesme_kontrolu(sadece_acil=None, hafif=None):
     """
     Bitis tarihi yaklasan (60 gun icindeki) sozlesmeleri bulur, kademeli
     aciliyet (kritik <=7 gun, yakin <=30 gun, planla <=60 gun) belirler,
-    AI'dan kisa uyari metni uretir. Cana TEK kayit dusurur.
-    ERPNext'in hazir 'Contract' DocType'ini kullanir -- yeni bir yapi
-    eklemez, sadece mevcut sozlesme kayitlarini okur.
-    SALT-OKUNUR: hicbir kayit olusturmaz/degistirmez.
+    AI'dan kisa uyari metni uretir. ERPNext'in hazir 'Contract' DocType'ini
+    kullanir -- yeni bir yapi eklemez, sadece mevcut sozlesme kayitlarini okur.
+
+    ONEMLI -- TAM SALT-OKUNUR DEGIL: Musteri/hizmet/fatura/sozlesme
+    verilerine dokunmaz, ama sistem bildirimi olarak 'Notification Log'a
+    (sadece 'sadece_acil' cagrisinda, tek kayit, tekrar eklemez) yazar.
+    Bu yazma ignore_permissions=True ile yapilir -- gorunur, zararsiz bir
+    sistem bildirimi oldugu icin bilincli tercih, ama "hicbir kayit
+    olusturmaz" iddiasi eksikti; iste tam durum budur.
     Donus: {"var": bool, "mesaj": str, "sozlesmeler": [...]}
     """
     try:
