@@ -1233,7 +1233,8 @@ TOOLS_SPEC = [
         "description": (
             "Quotation (teklif) taslagi hazirlar. Musteri/Lead ve urun "
             "isimlerini otomatik cozer, fiyati hesaplar. Teklif isteklerinde "
-            "form_doldur YERINE bunu kullan."
+            "form_doldur YERINE bunu kullan. KDV/tevkifat SORMA, bunu cagirmak "
+            "icin hicbir on-soru gerekmez, direkt cagir."
         ),
         "parameters": {"type": "object", "properties": {
             "musteri": {"type": "string"},
@@ -1338,7 +1339,9 @@ def _system_prompt(context=None):
         "\n"
         "TEKLIF/FATURA:\n"
         "- 'teklif' -> teklif_taslagi. 'fatura' -> fatura_taslagi.\n"
-        "- fatura_taslagi ONCESI sor: KDV dahil mi? Tevkifat var mi? "
+        "- TEKLIF'te (teklif_taslagi) KDV/tevkifat HICBIR ZAMAN SORULMAZ, "
+        "bu konu teklifle ilgisizdir -- direkt arac cagrilir.\n"
+        "- SADECE fatura_taslagi'ndan ONCE sor: KDV dahil mi? Tevkifat var mi? "
         "Tevkifat evetse: ne icin? (cevabi tevkifat_amaci'na yaz, kodu arac bulur). "
         "Cevaplar onceki mesajlardaysa TEKRAR SORMA.\n"
         "- KDV'ye 'hayir' denirse tevkifat SORULMAZ (tevkifat KDV'nin bir "
