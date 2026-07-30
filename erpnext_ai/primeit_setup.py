@@ -526,14 +526,13 @@ def sozlesme_urun_alani_olustur():
 def test_verisi_50_olustur():
     """
     50 (musteri, urun) cifti icin:
-      - Gecmis bir Satis Faturasi (fiyat motoru gecmis fiyat/enflasyon/
-        sadakat hesaplayabilsin diye)
-      - O urune bagli bir Sozlesme (Contract), bitis tarihleri COK CESITLI
-        dagitilir: bazilari kritik (<=7 gun), bazilari yakin (<=30 gun),
-        bazilari planlanmali (<=60 gun), bazilari uzak (>60 gun, uyari
-        vermez, sadece arka plan verisi).
-    Boylece hem fiyatlandirma hem sozlesme uyarisi/yenileme sistemi genis
-    bir test setiyle denenebilir.
+      - Once sozlesme BASLANGIC tarihi belirlenir (guvenli aralikta,
+        2026 mali yili icinde kalir).
+      - Fatura tarihi bu baslangic tarihine YAKIN (birkac gun sonrasi)
+        secilir -- boylece sozlesme ve fatura tarihleri TUTARLI olur.
+      - Sozlesme BITIS tarihleri COK CESITLI dagitilir: bazilari kritik
+        (<=7 gun), bazilari yakin (<=30 gun), bazilari planlanmali
+        (<=60 gun), bazilari uzak (>60 gun, uyari vermez).
     """
     import random
     import frappe.utils
@@ -552,7 +551,6 @@ def test_verisi_50_olustur():
     if len(tum_musteriler) < 50:
         print(f"UYARI: sadece {len(tum_musteriler)} musteri var, bazilari tekrar kullanilacak.")
 
-    # 50 benzersiz (musteri, urun) cifti — musterileri karistirip sirayla urun ata
     musteri_sirali = tum_musteriler[:]
     random.shuffle(musteri_sirali)
     ciftler = []
@@ -573,18 +571,32 @@ def test_verisi_50_olustur():
     bugun = frappe.utils.getdate()
     fatura_sayisi, sozlesme_sayisi = 0, 0
     fatura_hata, sozlesme_hata = 0, 0
-
-    # bitis tarihi dagilim ozeti icin sayac
     ozet = {"kritik": 0, "yakin": 0, "planla": 0, "uzak": 0}
 
     for i, (musteri, urun_kodu) in enumerate(ciftler):
-        # --- Gecmis Satis Faturasi ---
+        bitis_gun = bitis_gun_havuzu[i]
+        if bitis_gun <= 7:
+            ozet["kritik"] += 1
+        elif bitis_gun <= 30:
+            ozet["yakin"] += 1
+        elif bitis_gun <= 60:
+            ozet["planla"] += 1
+        else:
+            ozet["uzak"] += 1
+
+        # ONCE sozlesme baslangicini belirle -- guvenli aralik (2026 icinde)
+        baslangic_gun_once = random.randint(30, 180)
+        baslangic_tarihi = bugun - timedelta(days=baslangic_gun_once)
+        bitis_tarihi = bugun + timedelta(days=bitis_gun)
+
+        # Fatura tarihi baslangica YAKIN (0-5 gun sonrasi) -- TUTARLI olsun
+        fatura_tarihi = baslangic_tarihi + timedelta(days=random.randint(0, 5))
+
+        # --- Gecmis Satis Faturasi (sozlesme baslangicina yakin tarihli) ---
         try:
             standart = _standart_fiyat(urun_kodu) or 50000
             varyasyon = random.uniform(0.8, 1.15)
             eski_fiyat = round(standart * varyasyon, 2)
-            gun_once = random.randint(30, 180)  # 2026 mali yili icinde kalir
-            fatura_tarihi = bugun - timedelta(days=gun_once)
 
             si = frappe.new_doc("Sales Invoice")
             si.customer = musteri
@@ -603,21 +615,8 @@ def test_verisi_50_olustur():
             if fatura_hata <= 3:
                 print(f"  Fatura olusturulamadi ({musteri}/{urun_kodu}): {str(e)[:150]}")
 
-        # --- Sozlesme (Contract) ---
+        # --- Sozlesme (Contract) -- ayni baslangic tarihiyle ---
         try:
-            bitis_gun = bitis_gun_havuzu[i]
-            if bitis_gun <= 7:
-                ozet["kritik"] += 1
-            elif bitis_gun <= 30:
-                ozet["yakin"] += 1
-            elif bitis_gun <= 60:
-                ozet["planla"] += 1
-            else:
-                ozet["uzak"] += 1
-
-            bitis_tarihi = bugun + timedelta(days=bitis_gun)
-            baslangic_tarihi = bugun - timedelta(days=365 - bitis_gun)
-
             urun_adi_c = dict((k, ad) for (k, ad, t, f) in URUNLER).get(urun_kodu, urun_kodu)
             c = frappe.new_doc("Contract")
             c.party_type = "Customer"
@@ -643,6 +642,73 @@ def test_verisi_50_olustur():
         "fatura_hata": fatura_hata, "sozlesme_hata": sozlesme_hata,
         "dagilim": ozet,
     }
+
+
+def test_verisi_50_temizle():
+    """
+    test_verisi_50_olustur() ile olusturulan 50 (musteri,urun) ciftine ait
+    TUM fatura ve sozlesmeleri siler -- gercek musteri/urun kayitlarina
+    (Customer/Item) DOKUNMAZ, sadece bu test islemlerini temizler.
+    Aynı deterministik (seed=42) mantikla ayni 50 cifti yeniden hesaplar.
+    """
+    import random
+
+    random.seed(42)
+    tum_musteriler = [f for liste in MUSTERI_GRUPLARI.values() for f in liste]
+    tum_urunler = [kod for (kod, ad, tur, fiyat) in URUNLER]
+    musteri_sirali = tum_musteriler[:]
+    random.shuffle(musteri_sirali)
+    ciftler = []
+    for i in range(50):
+        musteri = musteri_sirali[i % len(musteri_sirali)]
+        urun = tum_urunler[i % len(tum_urunler)]
+        ciftler.append((musteri, urun))
+
+    fatura_silinen, sozlesme_silinen = 0, 0
+
+    for musteri, urun_kodu in ciftler:
+        # Faturalar
+        try:
+            kalemler = frappe.get_all(
+                "Sales Invoice Item", filters={"item_code": urun_kodu}, fields=["parent"]
+            )
+            parent_adlar = {k["parent"] for k in kalemler}
+            eslesen = frappe.get_all(
+                "Sales Invoice",
+                filters={"name": ["in", list(parent_adlar)], "customer": musteri},
+                fields=["name", "docstatus"],
+            ) if parent_adlar else []
+            for f in eslesen:
+                try:
+                    if f["docstatus"] == 1:
+                        frappe.get_doc("Sales Invoice", f["name"]).cancel()
+                    frappe.delete_doc("Sales Invoice", f["name"], force=True, ignore_permissions=True)
+                    frappe.db.commit()
+                    fatura_silinen += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Sozlesmeler
+        try:
+            eslesen_c = frappe.get_all(
+                "Contract",
+                filters={"party_name": musteri, "custom_ilgili_urun": urun_kodu},
+                fields=["name"],
+            )
+            for c in eslesen_c:
+                try:
+                    frappe.delete_doc("Contract", c["name"], force=True, ignore_permissions=True)
+                    frappe.db.commit()
+                    sozlesme_silinen += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    print(f"Silindi: {fatura_silinen} fatura, {sozlesme_silinen} sozlesme.")
+    return {"fatura_silinen": fatura_silinen, "sozlesme_silinen": sozlesme_silinen}
 
 
 def eksik_faturalari_tamamla():
@@ -722,3 +788,117 @@ def eksik_faturalari_tamamla():
 
     print(f"\nTamamlandi: {olusan} yeni fatura, {atlanan} zaten vardi, {hata} hata.")
     return {"olusan": olusan, "atlanan": atlanan, "hata": hata}
+
+
+def maliyet_alani_olustur():
+    """
+    Item doctype'ina 'Maliyet' (custom_maliyet) alanini ekler. Bu, fiyat
+    motorunun 'zararina satis' riskini tespit edebilmesi icin gereklidir --
+    onceden hicbir maliyet kavrami yoktu, sadece satis fiyati vardi.
+    """
+    dt = "Item"
+    fieldname = "custom_maliyet"
+
+    if frappe.db.exists("Custom Field", {"dt": dt, "fieldname": fieldname}):
+        print("Alan zaten mevcut, islem yapilmadi.")
+        return {"olusan": 0}
+
+    try:
+        cf = frappe.new_doc("Custom Field")
+        cf.dt = dt
+        cf.fieldname = fieldname
+        cf.label = "Maliyet (Yillik/Birim)"
+        cf.fieldtype = "Currency"
+        cf.insert_after = "standard_rate"
+        cf.description = "Hizmetlerde YILLIK, urunlerde BIRIM maliyet. Fiyat bunun altina duserse AI uyarir."
+        cf.insert(ignore_permissions=True)
+        frappe.db.commit()
+        frappe.clear_cache()
+        print("Alan olusturuldu: Item.custom_maliyet")
+        return {"olusan": 1}
+    except Exception as e:
+        print(f"Alan olusturulamadi: {str(e)[:200]}")
+        return {"olusan": 0}
+
+
+def maliyet_degerleri_gir():
+    """
+    11 urun/hizmet icin PLASEHOLDER maliyet degeri girer (standart fiyatin
+    %60'i -- tipik bir kar marji varsayimi). GERCEK maliyetlerinizle
+    Item > Maliyet alanindan guncelleyin.
+    """
+    guncellenen = 0
+    for kod, ad, tur, fiyat in URUNLER:
+        if not frappe.db.exists("Item", kod):
+            continue
+        try:
+            maliyet = round(fiyat * 0.6, 2)
+            frappe.db.set_value("Item", kod, "custom_maliyet", maliyet)
+            frappe.db.commit()
+            guncellenen += 1
+        except Exception as e:
+            print(f"  Guncellenemedi {kod}: {str(e)[:150]}")
+
+    print(f"\n{guncellenen} urune placeholder maliyet girildi (standart fiyatin %60'i).")
+    print("NOT: Bunlar PLASEHOLDER'dir, gercek maliyetlerinizle guncelleyin.")
+    return {"guncellenen": guncellenen}
+
+
+def fiyat_periyodu_alani_olustur():
+    """
+    Item'a 'Fiyat Periyodu' (Yillik/Aylik) alanini ekler. Onceden kod
+    icinde SESSIZCE varsayiliyordu: 'SRV- ile baslayan urunlerin
+    standard_rate'i YILLIKTIR'. Biri yanlislikla aylik fiyat girerse
+    (kod bunu bilemedigi icin) her hesap 12 kat sapardi, hicbir uyari
+    cikmazdi. Artik bu VARSAYIM yerine ACIK bir alan var.
+    """
+    dt = "Item"
+    fieldname = "custom_fiyat_periyodu"
+
+    if frappe.db.exists("Custom Field", {"dt": dt, "fieldname": fieldname}):
+        print("Alan zaten mevcut, islem yapilmadi.")
+        return {"olusan": 0}
+
+    try:
+        cf = frappe.new_doc("Custom Field")
+        cf.dt = dt
+        cf.fieldname = fieldname
+        cf.label = "Fiyat Periyodu (Standart Oran icin)"
+        cf.fieldtype = "Select"
+        cf.options = "Yillik\nAylik\nTek Seferlik (Adet/Lisans)"
+        cf.default = "Yillik"
+        cf.insert_after = "custom_maliyet"
+        cf.description = (
+            "Standart Oran alanindaki fiyat hangi donemi temsil ediyor? "
+            "Hizmetlerde genelde Yillik, urun/lisanslarda Tek Seferlik secilir. "
+            "YANLIS secim fiyat hesabini ciddi sekilde bozar."
+        )
+        cf.insert(ignore_permissions=True)
+        frappe.db.commit()
+        frappe.clear_cache()
+        print("Alan olusturuldu: Item.custom_fiyat_periyodu")
+        return {"olusan": 1}
+    except Exception as e:
+        print(f"Alan olusturulamadi: {str(e)[:200]}")
+        return {"olusan": 0}
+
+
+def fiyat_periyodu_degerleri_gir():
+    """
+    Mevcut 11 urun/hizmete dogru fiyat periyodunu isaretler:
+    SRV- olanlar Yillik, PRM- olanlar Tek Seferlik (Adet/Lisans).
+    """
+    guncellenen = 0
+    for kod, ad, tur, fiyat in URUNLER:
+        if not frappe.db.exists("Item", kod):
+            continue
+        periyot = "Yillik" if kod.startswith("SRV-") else "Tek Seferlik (Adet/Lisans)"
+        try:
+            frappe.db.set_value("Item", kod, "custom_fiyat_periyodu", periyot)
+            frappe.db.commit()
+            guncellenen += 1
+        except Exception as e:
+            print(f"  Guncellenemedi {kod}: {str(e)[:150]}")
+
+    print(f"\n{guncellenen} urune fiyat periyodu isaretlendi.")
+    return {"guncellenen": guncellenen}
