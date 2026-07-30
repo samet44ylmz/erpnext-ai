@@ -1009,6 +1009,9 @@ def _tool_fatura_taslagi(args):
 
     # --- Tevkifat ---
     tevkifat_bilgi = None
+    if tevkifatli and not kdv_dahil:
+        tevkifatli = False  # KDV yoksa tevkifat da olamaz -- kod seviyesinde garanti
+
     if tevkifatli:
         bulunan = _tevkifat_kodu_bul(tevkifat_amaci)
         if bulunan:
@@ -1267,7 +1270,8 @@ TOOLS_SPEC = [
             )},
             "tevkifatli": {"type": "boolean", "description": (
                 "Kullanici tevkifat sorusuna 'evet' dediyse true, "
-                "'hayir' dediyse false."
+                "'hayir' dediyse false. KDV=false ise bu SORULMAZ, "
+                "otomatik false gonderilir (KDV yoksa tevkifat olmaz)."
             )},
             "tevkifat_amaci": {"type": "string", "description": (
                 "Tevkifatli ise: kullanicinin 'ne icin' cevabi (orn: 'reklam "
@@ -1337,6 +1341,9 @@ def _system_prompt(context=None):
         "- fatura_taslagi ONCESI sor: KDV dahil mi? Tevkifat var mi? "
         "Tevkifat evetse: ne icin? (cevabi tevkifat_amaci'na yaz, kodu arac bulur). "
         "Cevaplar onceki mesajlardaysa TEKRAR SORMA.\n"
+        "- KDV'ye 'hayir' denirse tevkifat SORULMAZ (tevkifat KDV'nin bir "
+        "kismini kesmek demektir, KDV yoksa tevkifat da olamaz). Direkt "
+        "kdv_dahil=false, tevkifatli=false ile fatura_taslagi'ni cagir.\n"
         "- sure_bazli karari URUN KODUNA DEGIL kullanicinin sozune bakar: "
         "'ay/yil' gecerse true (miktar=ay sayisi, yillik fiyattan oranli, "
         "satirda adet=1, tarih alanlari dolar). 'adet/lisans' gecerse false "
