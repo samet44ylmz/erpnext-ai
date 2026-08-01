@@ -42,8 +42,6 @@ ALLOWED_DOCTYPES = {
     "Sales Order Item",
     "Delivery Note",
     "Item",
-    "Stock Ledger Entry",
-    "Bin",
     "Payment Entry",
     # HCM: yalnizca pozisyon tanimlari — calisan/maas verisi DEGIL
     "Job Opening",
@@ -184,296 +182,6 @@ def _tool_form_doldur(args):
         "alanlar": alanlar,
     }, ensure_ascii=False, default=str)
 
-def _tool_stok_durumu(args):
-    """
-    Her urunun guncel stogunu, yeniden siparis esigini, siparis miktarini
-    ve varsayilan tedarikcisini birlestirip dondurur.
-    Eshik altinda olanlari isaretler. SALT-OKUNUR, siparis vermez.
-    """
-    depo = args.get("depo")  # opsiyonel; verilmezse tum depolar
-    try:
-        # 0) Kac urun oldugunu once ogren -- kirpma sessiz kalmasin
-        toplam_urun_sayisi = frappe.db.count("Item", filters={"disabled": 0, "is_stock_item": 1})
-        # 1) Urunlerin yeniden siparis ayarlarini cek (Item + Item Reorder)
-        urunler = frappe.get_list(
-            "Item",
-            filters={"disabled": 0, "is_stock_item": 1},
-            fields=["name", "item_name", "item_code"],
-            limit_page_length=100,
-        )
-    except frappe.PermissionError:
-        return "Urun verisine erisim yetkiniz yok."
-    except Exception as e:
-        return f"Sorgu hatasi: {str(e)[:200]}"
-
-    sonuc = []
-    for u in urunler:
-        kod = u.get("item_code") or u.get("name")
-
-        # guncel stok (Bin tablosundan)
-        bin_filtreler = {"item_code": kod}
-        if depo:
-            bin_filtreler["warehouse"] = depo
-        try:
-            binler = frappe.get_list(
-                "Bin", filters=bin_filtreler,
-                fields=["warehouse", "actual_qty"], limit_page_length=20,
-            )
-        except Exception:
-            binler = []
-        toplam_stok = sum((b.get("actual_qty") or 0) for b in binler)
-
-        # yeniden siparis esigi (Item Reorder cocuk tablosu)
-        try:
-            reorder = frappe.get_all(
-                "Item Reorder",
-                filters={"parent": kod},
-                fields=["warehouse_reorder_level", "warehouse_reorder_qty", "warehouse"],
-                limit_page_length=5,
-            )
-        except Exception:
-            reorder = []
-        esik = reorder[0]["warehouse_reorder_level"] if reorder else None
-        siparis_qty = reorder[0]["warehouse_reorder_qty"] if reorder else None
-
-        # varsayilan tedarikci
-        try:
-            ts = frappe.get_all(
-                "Item Default",
-                filters={"parent": kod},
-                fields=["default_supplier"],
-                limit_page_length=1,
-            )
-            tedarikci = ts[0]["default_supplier"] if ts and ts[0].get("default_supplier") else None
-        except Exception:
-            tedarikci = None
-
-        durum = "normal"
-        if esik is not None and toplam_stok < esik:
-            durum = "esik_altinda"
-
-        sonuc.append({
-            "urun": u.get("item_name") or kod,
-            "kod": kod,
-            "stok": toplam_stok,
-            "esik": esik,
-            "onerilen_siparis": siparis_qty,
-            "tedarikci": tedarikci,
-            "durum": durum,
-        })
-
-    cikti = {"urunler": sonuc}
-    if toplam_urun_sayisi > len(urunler):
-        cikti["uyari"] = (
-            f"DIKKAT: Sistemde {toplam_urun_sayisi} stoklu urun var, sadece "
-            f"ilk {len(urunler)} tanesi analiz edildi. Kalan urunler hic "
-            "kontrol edilmedi."
-        )
-    return json.dumps(cikti, ensure_ascii=False, default=str)
-
-
-
-def _tool_stok_analiz(args):
-    """
-    Satis hizina gore akilli stok analizi ve siparis onerisi.
-
-    Mantik:
-      - Son 1 aydaki (varsayilan 30 gun) satistan gunluk satis hizi hesaplanir.
-      - Mevcut stok / gunluk hiz = kac gun yeter.
-      - Hedef kapsama suresi kadar stok tutulmasi onerilir.
-      - Satis yoksa ama stok esigin altindaysa yine uyarilir (esik yedegi).
-      - Az sayida faturaya dayanan tahminler "dusuk guven" olarak isaretlenir.
-    SALT-OKUNUR: hicbir siparis olusturulmaz.
-    """
-    from math import ceil
-
-    gecmis_gun = int(args.get("gecmis_gun") or 30)
-    hedef_gun = int(args.get("hedef_gun") or 45)
-    depo = args.get("depo")
-
-    baslangic = (date.today() - timedelta(days=gecmis_gun)).isoformat()
-
-    # 1) Donem icindeki kesinlesmis satis faturalari (kullanici yetkisiyle)
-    try:
-        faturalar = frappe.get_list(
-            "Sales Invoice",
-            filters={"docstatus": 1, "posting_date": [">=", baslangic]},
-            fields=["name"],
-            limit_page_length=0,
-        )
-    except frappe.PermissionError:
-        return "Satis verisine erisim yetkiniz yok."
-    except Exception as e:
-        return f"Satis sorgusu hatasi: {str(e)[:200]}"
-
-    fatura_adlari = [f.get("name") for f in faturalar]
-
-    # 2) Urun bazinda toplam miktar + kac ayri faturada gectigi
-    satis_map = {}
-    fatura_sayi_map = {}
-    if fatura_adlari:
-        try:
-            kalemler = frappe.get_all(
-                "Sales Invoice Item",
-                filters={"parent": ["in", fatura_adlari]},
-                fields=["item_code", "qty", "parent"],
-                limit_page_length=5000,
-            )
-            gecen = {}
-            for k in kalemler:
-                kod = k.get("item_code")
-                satis_map[kod] = satis_map.get(kod, 0.0) + float(k.get("qty") or 0)
-                gecen.setdefault(kod, set()).add(k.get("parent"))
-            fatura_sayi_map = {k: len(v) for k, v in gecen.items()}
-        except Exception:
-            satis_map, fatura_sayi_map = {}, {}
-
-    # 3) Urunler + stok + esik
-    try:
-        toplam_urun_sayisi = frappe.db.count("Item", filters={"disabled": 0, "is_stock_item": 1})
-        urunler = frappe.get_list(
-            "Item",
-            filters={"disabled": 0, "is_stock_item": 1},
-            fields=["name", "item_name", "item_code"],
-            limit_page_length=100,
-        )
-    except Exception as e:
-        return f"Urun sorgusu hatasi: {str(e)[:200]}"
-
-    def yuvarla(x):
-        """Okunakli sayi: 20 ustu degerleri 10'un katina yuvarlar."""
-        n = int(ceil(x))
-        return int(ceil(n / 10.0) * 10) if n > 20 else n
-
-    sonuc = []
-    for u in urunler:
-        kod = u.get("item_code") or u.get("name")
-
-        bin_filtreler = {"item_code": kod}
-        if depo:
-            bin_filtreler["warehouse"] = depo
-        try:
-            binler = frappe.get_list(
-                "Bin", filters=bin_filtreler,
-                fields=["actual_qty"], limit_page_length=20,
-            )
-        except Exception:
-            binler = []
-        stok = sum(float(b.get("actual_qty") or 0) for b in binler)
-
-        try:
-            reorder = frappe.get_all(
-                "Item Reorder", filters={"parent": kod},
-                fields=["warehouse_reorder_level", "warehouse_reorder_qty"],
-                limit_page_length=1,
-            )
-        except Exception:
-            reorder = []
-        esik = reorder[0].get("warehouse_reorder_level") if reorder else None
-        esik_siparis = reorder[0].get("warehouse_reorder_qty") if reorder else None
-
-        satilan = satis_map.get(kod, 0.0)
-        fatura_adedi = fatura_sayi_map.get(kod, 0)
-        gunluk = satilan / gecmis_gun if gecmis_gun else 0.0
-        aylik = round(gunluk * 30, 1)
-
-        esik_altinda = (esik is not None and stok < esik)
-
-        # tahmin guveni: az faturaya dayanan hiz yaniltici olabilir
-        if satilan <= 0:
-            guven = "veri_yok"
-        elif fatura_adedi < 3:
-            guven = "dusuk"
-        elif fatura_adedi < 6:
-            guven = "orta"
-        else:
-            guven = "iyi"
-
-        # --- Karar mantigi ---
-        if gunluk <= 0:
-            kalan_gun = None
-            if esik_altinda:
-                # satis verisi yok ama esik altinda -> klasik esik mantigi devrede
-                durum = "esik_alti_satis_yok"
-                oneri = int(esik_siparis or 0)
-                gerekce = (f"Son {gecmis_gun} gunde satis kaydi yok, ancak stok "
-                           f"({int(stok)}) siparis esiginin ({int(esik)}) altinda. "
-                           "Satis hizi hesaplanamadigi icin oneri sabit esik "
-                           "miktarina dayanir; karari gozden gecirin.")
-            elif stok > 0:
-                durum = "olu_stok"
-                oneri = 0
-                gerekce = (f"Son {gecmis_gun} gunde satis yok, elde {int(stok)} adet var. "
-                           "Yeni siparis onerilmez.")
-            else:
-                durum = "hareketsiz"
-                oneri = 0
-                gerekce = f"Son {gecmis_gun} gunde satis yok, stok da yok."
-        else:
-            kalan_gun = round(stok / gunluk)  # tam sayiya yuvarla
-            ihtiyac = gunluk * hedef_gun - stok
-            oneri = yuvarla(ihtiyac) if ihtiyac > 0 else 0
-
-            if kalan_gun < 7:
-                durum = "kritik"
-                gerekce = (f"Ayda ~{aylik} adet satiyor, elde {int(stok)} adet var. "
-                           f"Yaklasik {kalan_gun} gun yeter.")
-            elif kalan_gun < 15:
-                durum = "acil"
-                gerekce = f"Ayda ~{aylik} adet satiyor, {kalan_gun} gunluk stok kaldi."
-            elif oneri > 0:
-                durum = "siparis_zamani"
-                gerekce = (f"Ayda ~{aylik} adet satiyor, {kalan_gun} gunluk stok var. "
-                           f"{hedef_gun} gunluk kapsama icin takviye gerekir.")
-            elif kalan_gun > hedef_gun * 2:
-                durum = "fazla_stok"
-                gerekce = (f"Ayda ~{aylik} adet satiyor ama {kalan_gun} gunluk stok var. "
-                           "Siparis onerilmez, stok fazlasi baglaniyor.")
-            else:
-                durum = "normal"
-                gerekce = f"Ayda ~{aylik} adet satiyor, {kalan_gun} gunluk stok yeterli."
-
-            # guven dusukse uyari notu ve sabit esik miktariyla karsilastirma
-            if guven == "dusuk" and oneri > 0:
-                gerekce += (f" Not: bu tahmin yalnizca {fatura_adedi} faturaya dayaniyor, "
-                            "hiz yaniltici olabilir.")
-                if esik_siparis and oneri > esik_siparis * 3:
-                    gerekce += (f" Tanimli sabit siparis miktari {int(esik_siparis)} adet; "
-                                "aradaki fark buyuk, teyit edin.")
-
-        sonuc.append({
-            "urun": u.get("item_name") or kod,
-            "kod": kod,
-            "stok": int(stok),
-            "esik": esik,
-            "esik_altinda": esik_altinda,
-            "aylik_satis": aylik,
-            "kalan_gun": kalan_gun,
-            "durum": durum,
-            "onerilen_siparis": oneri,
-            "sabit_siparis_miktari": esik_siparis,
-            "fatura_sayisi": fatura_adedi,
-            "guven": guven,
-            "gerekce": gerekce,
-        })
-
-    oncelik = {"kritik": 0, "acil": 1, "esik_alti_satis_yok": 2, "siparis_zamani": 3,
-               "normal": 4, "fazla_stok": 5, "olu_stok": 6, "hareketsiz": 7}
-    sonuc.sort(key=lambda x: oncelik.get(x["durum"], 9))
-
-    cikti = {
-        "gecmis_gun": gecmis_gun,
-        "hedef_gun": hedef_gun,
-        "urunler": sonuc,
-    }
-    if toplam_urun_sayisi > len(urunler):
-        cikti["uyari"] = (
-            f"DIKKAT: Sistemde {toplam_urun_sayisi} stoklu urun var, sadece "
-            f"ilk {len(urunler)} tanesi analiz edildi. Kalan urunler hic "
-            "kontrol edilmedi."
-        )
-    return json.dumps(cikti, ensure_ascii=False, default=str)
-
 
 # ------------------------------------------------------------------
 # EVDS (TCMB) — doviz kuru ve enflasyon verisi
@@ -558,15 +266,21 @@ def _evds_yuzde_degisim(seri, eski_tarih):
     return (bugun - eski) / eski * 100.0
 
 
-# Fiyat, maliyetin sadece UZERINDE olmasi yetmez -- bu kadar MINIMUM kar
-# marji da olmali. Ornek: 0.15 = maliyetin en az %15 uzerinde olmali.
-MIN_MARJ = 0.15
+# ------------------------------------------------------------------
+# IS KURALLARI (sektor ayari, sadakat kademeleri, marj/iskonto sinirlari)
+#
+# Bu degerler ARTIK KODDA SABIT DEGIL -- ERPNext arayuzunden duzenlenebilen
+# DocType kayitlarindan okunur. Satis ekibi bir yuzdeyi degistirmek icin
+# kod degisikligi + deploy beklemek zorunda degil.
+#
+# Asagidaki VARSAYILAN_* tablolari YALNIZCA yedektir: DocType'lar henuz
+# kurulmadiysa (setup script'i calistirilmadan once) ya da tablo bosaltildiysa
+# sistem eski davranisiyla calismaya devam eder, sessizce sifirlanmaz.
+# ------------------------------------------------------------------
+VARSAYILAN_MIN_MARJ = 0.15          # maliyetin en az %15 uzerinde olmali
+VARSAYILAN_ISKONTO_ONAY_ESIGI = 15  # toplam indirim bu yuzdeyi gecerse onay
 
-# Toplam indirim (sektor + sadakat) bu yuzdeyi gecerse, AI onay istemeden
-# taslak acamaz -- yonetici onayi gerektigini belirtir.
-ISKONTO_ONAY_ESIGI = 15  # yuzde
-
-SEKTOR_FIYAT_AYARI = {
+VARSAYILAN_SEKTOR_FIYAT_AYARI = {
     # yuzde: pozitif = zam, negatif = indirim (taban fiyata uygulanir)
     "Finans": 8,
     "Sigorta": 5,
@@ -579,7 +293,7 @@ SEKTOR_FIYAT_AYARI = {
     "FMCG": -5,
 }
 
-SEKTOR_GEREKCE = {
+VARSAYILAN_SEKTOR_GEREKCE = {
     "Finans": "regule sektor, yuksek uyum/guvenlik gereksinimleri ve buyuk butceler",
     "Sigorta": "regule sektor, orta duzey uyum maliyeti",
     "Yatirim": "regule sektor, benzer uyum gereksinimleri",
@@ -591,6 +305,141 @@ SEKTOR_GEREKCE = {
     "FMCG": "buyuk olcekli firmalar, guclu pazarlik gucu",
 }
 
+# (minimum_ciro, indirim_yuzdesi) -- BUYUKTEN KUCUGE sirali olmali
+VARSAYILAN_SADAKAT_KADEMELERI = [
+    (300000.0, 12.0),
+    (150000.0, 8.0),
+    (75000.0, 5.0),
+    (25000.0, 3.0),
+]
+
+AYAR_CACHE_ANAHTARI = "erpnext_ai_fiyat_ayarlari"
+AYAR_CACHE_SANIYE = 300  # 5 dk; kayit degisince hook zaten aninda temizler
+
+
+def fiyat_ayarlari_onbellegi_temizle(doc=None, method=None):
+    """
+    Ayar DocType'larindan biri degisince onbellegi dusurur. hooks.py'daki
+    doc_events uzerinden otomatik cagrilir; elle de cagrilabilir.
+    """
+    try:
+        frappe.cache().delete_value(AYAR_CACHE_ANAHTARI)
+    except Exception:
+        pass
+
+
+def _fiyat_ayarlari():
+    """
+    Is kurallarini DocType'lardan okur ve onbellege alir.
+
+    Her tablo BAGIMSIZ degerlendirilir: sektor tablosu doluysa oradan,
+    bos/eksikse varsayilandan okunur. Boylece yarim kurulumda sistem
+    kismen degil, tutarli sekilde calisir.
+
+    Donus: {"sektor", "gerekce", "kademeler", "min_marj",
+            "iskonto_esigi", "kaynak"}
+    """
+    try:
+        onbellek = frappe.cache().get_value(AYAR_CACHE_ANAHTARI)
+        if onbellek:
+            return onbellek
+    except Exception:
+        pass
+
+    ayar = {
+        "sektor": dict(VARSAYILAN_SEKTOR_FIYAT_AYARI),
+        "gerekce": dict(VARSAYILAN_SEKTOR_GEREKCE),
+        "kademeler": list(VARSAYILAN_SADAKAT_KADEMELERI),
+        "min_marj": VARSAYILAN_MIN_MARJ,
+        "iskonto_esigi": VARSAYILAN_ISKONTO_ONAY_ESIGI,
+        "kaynak": [],
+    }
+
+    # --- 1) Sektor fiyat ayarlari ---
+    try:
+        if frappe.db.exists("DocType", "Sektor Fiyat Ayari"):
+            satirlar = frappe.get_all(
+                "Sektor Fiyat Ayari",
+                filters={"aktif": 1},
+                fields=["sektor", "yuzde", "gerekce"],
+                limit_page_length=0,
+            )
+            if satirlar:
+                ayar["sektor"] = {
+                    s["sektor"]: float(s.get("yuzde") or 0) for s in satirlar
+                }
+                ayar["gerekce"] = {
+                    s["sektor"]: (s.get("gerekce") or "") for s in satirlar
+                }
+                ayar["kaynak"].append("sektor:doctype")
+    except Exception as e:
+        frappe.log_error(
+            f"Sektor Fiyat Ayari okunamadi, varsayilan kullaniliyor: {str(e)[:300]}",
+            "erpnext_ai fiyat ayarlari",
+        )
+
+    # --- 2) Sadakat kademeleri ---
+    try:
+        if frappe.db.exists("DocType", "Sadakat Kademesi"):
+            satirlar = frappe.get_all(
+                "Sadakat Kademesi",
+                filters={"aktif": 1},
+                fields=["minimum_ciro", "indirim_yuzde"],
+                limit_page_length=0,
+            )
+            if satirlar:
+                kademeler = [
+                    (float(s.get("minimum_ciro") or 0), float(s.get("indirim_yuzde") or 0))
+                    for s in satirlar
+                ]
+                # Buyukten kucuge -- ilk eslesen kademe kazanir.
+                ayar["kademeler"] = sorted(kademeler, key=lambda k: k[0], reverse=True)
+                ayar["kaynak"].append("sadakat:doctype")
+    except Exception as e:
+        frappe.log_error(
+            f"Sadakat Kademesi okunamadi, varsayilan kullaniliyor: {str(e)[:300]}",
+            "erpnext_ai fiyat ayarlari",
+        )
+
+    # --- 3) Marj / iskonto sinirlari (tekil ayar kaydi) ---
+    try:
+        if frappe.db.exists("DocType", "Fiyat Motoru Ayari"):
+            tekil = frappe.get_single("Fiyat Motoru Ayari")
+            marj = tekil.get("minimum_marj_yuzde")
+            esik = tekil.get("iskonto_onay_esigi")
+            if marj not in (None, ""):
+                marj = float(marj)
+                # Alan YUZDE bekler (15 = %15). Biri oran olarak (0.15)
+                # girerse marj %0.15'e duser ve zarar kontrolu pratikte
+                # hicbir seyi yakalamaz -- sessiz gecmeyip yedege doneriz.
+                if 0 < marj < 1:
+                    frappe.log_error(
+                        f"Fiyat Motoru Ayari: minimum marj '{marj}' olarak girilmis. "
+                        f"Bu alan YUZDE bekler (orn. 15 = %15). Oran girildigi "
+                        f"varsayilarak yok sayildi, varsayilan "
+                        f"%{VARSAYILAN_MIN_MARJ * 100:.0f} kullaniliyor.",
+                        "erpnext_ai fiyat ayarlari",
+                    )
+                else:
+                    ayar["min_marj"] = marj / 100.0
+            if esik not in (None, ""):
+                ayar["iskonto_esigi"] = float(esik)
+            ayar["kaynak"].append("sinirlar:doctype")
+    except Exception as e:
+        frappe.log_error(
+            f"Fiyat Motoru Ayari okunamadi, varsayilan kullaniliyor: {str(e)[:300]}",
+            "erpnext_ai fiyat ayarlari",
+        )
+
+    if not ayar["kaynak"]:
+        ayar["kaynak"] = ["varsayilan"]
+
+    try:
+        frappe.cache().set_value(AYAR_CACHE_ANAHTARI, ayar, expires_in_sec=AYAR_CACHE_SANIYE)
+    except Exception:
+        pass
+    return ayar
+
 
 def _sektor_ayari(musteri):
     """
@@ -601,21 +450,17 @@ def _sektor_ayari(musteri):
         grup = frappe.db.get_value("Customer", musteri, "customer_group")
     except Exception:
         grup = None
-    yuzde = SEKTOR_FIYAT_AYARI.get(grup, 0)
-    gerekce = SEKTOR_GEREKCE.get(grup, "")
+    ayar = _fiyat_ayarlari()
+    yuzde = ayar["sektor"].get(grup, 0)
+    gerekce = ayar["gerekce"].get(grup, "")
     return yuzde, grup, gerekce
 
 
 def _sadakat_indirim_yuzdesi(ciro):
     """Son 12 aylik ciroya gore kademeli sadakat indirimi (%)."""
-    if ciro >= 300000:
-        return 12
-    if ciro >= 150000:
-        return 8
-    if ciro >= 75000:
-        return 5
-    if ciro >= 25000:
-        return 3
+    for minimum_ciro, yuzde in _fiyat_ayarlari()["kademeler"]:
+        if ciro >= minimum_ciro:
+            return yuzde
     return 0
 
 
@@ -943,7 +788,7 @@ def _tool_fiyat_onerisi(args):
                 karsilastirma_maliyet = round(maliyet * miktar, 2)
             else:
                 karsilastirma_maliyet = maliyet * miktar
-            gerekli_minimum = round(karsilastirma_maliyet * (1 + MIN_MARJ), 2)
+            gerekli_minimum = round(karsilastirma_maliyet * (1 + _fiyat_ayarlari()["min_marj"]), 2)
             if toplam_nihai < gerekli_minimum:
                 zarar_riski = True
     except Exception:
@@ -955,7 +800,7 @@ def _tool_fiyat_onerisi(args):
         toplam_indirim_yuzde += abs(sektor_yuzde)
     if sadakat_yuzde:
         toplam_indirim_yuzde += sadakat_yuzde
-    onay_gerekli = toplam_indirim_yuzde > ISKONTO_ONAY_ESIGI
+    onay_gerekli = toplam_indirim_yuzde > _fiyat_ayarlari()["iskonto_esigi"]
 
     sonuc = {
         "gecmis_var": gecmis_var,
@@ -1289,8 +1134,6 @@ TOOL_FNS = {
     "liste": _tool_liste,
     "alanlari_getir": _tool_alanlari_getir,
     "form_doldur": _tool_form_doldur,
-    "stok_durumu": _tool_stok_durumu,
-    "stok_analiz": _tool_stok_analiz,
     "fiyat_onerisi": _tool_fiyat_onerisi,
     "teklif_taslagi": _tool_teklif_taslagi,
     "fatura_taslagi": _tool_fatura_taslagi,
@@ -1422,30 +1265,6 @@ TOOLS_SPEC = [
             "alanlar": {"type": "object", "description": "orn: {'customer': 'Ahmet Yilmaz', 'grand_total': 5000}"},
         }, "required": ["doctype", "alanlar"]},
     }},
-    {"type": "function", "function": {
-        "name": "stok_analiz",
-        "description": (
-            "Satis hizina gore stok analizi ve siparis onerisi. Stok "
-            "sorularinda BUNU kullan (stok_durumu yerine)."
-        ),
-        "parameters": {"type": "object", "properties": {
-            "gecmis_gun": {"type": "integer", "description": "kac gunluk satisa bakilsin, varsayilan 30 (son 1 ay)"},
-            "hedef_gun": {"type": "integer", "description": "kac gunluk stok tutulsun, varsayilan 45"},
-            "depo": {"type": "string", "description": "opsiyonel"},
-        }},
-    }},
-    {"type": "function", "function": {
-        "name": "stok_durumu",
-        "description": (
-            "Tum stok urunlerinin guncel miktarini, yeniden siparis esigini, "
-            "onerilen siparis miktarini ve tedarikcisini dondurur. "
-            "'stok durumu', 'ne siparis etmeliyim', 'stogu azalan urunler' "
-            "gibi sorularda kullan. Eshik altindaki urunler 'durum: esik_altinda' olur."
-        ),
-        "parameters": {"type": "object", "properties": {
-            "depo": {"type": "string", "description": "opsiyonel, orn: Magazalar - PT"},
-        }},
-    }},
 ]
 
 
@@ -1503,11 +1322,8 @@ def _system_prompt(context=None):
         "Gercek calisan/maas bilgisi ISTEME, sadece pozisyon adiyla calis.\n"
         "- Kaydetmek isterse form_doldur ile Job Opening taslagi ac.\n"
         "\n"
-        "STOK: 'stok_analiz' kullan. Her urun icin kalan gun, aylik satis, "
-        "onerilen siparis ve NEDEN. Aciliyet sirasiyla. fazla_stok/olu_stok'ta "
-        "siparis ONERME. Satis verisi yoksa/guven dusukse belirt. "
-        "'uyari' alani varsa (kirpilmis veri) MUTLAKA kullaniciya aktar, "
-        "gizleme.\n"
+        "UYARI ALANI: Bir arac sonucunda 'uyari' alani varsa (kirpilmis veri) "
+        "MUTLAKA kullaniciya aktar, gizleme.\n"
         "\n"
         "DOGRULUK (KRITIK):\n"
         "- Sadece GERCEKTEN cagirdigin araclarin sonucuna dayan.\n"
@@ -1684,154 +1500,6 @@ def ask(question, context=None, gecmis=None):
         "cevap": "Islem uzun surdu. Lutfen sorunuzu biraz daha sadelestirin.",
         "form_taslak": form_taslak,
         "adimlar": adimlar,
-    }
-
-
-@frappe.whitelist()
-def kritik_stok_kontrol():
-    """
-    Esik altindaki urunleri bulur, AI'dan oneri metni uretir.
-    Cana TEK kayit dusurur (ayni okunmamis uyari varsa tekrar eklemez).
-    Donus: {"var": bool, "mesaj": "...", "urun_sayisi": n}
-    """
-    # 1) Akilli analiz: satis hizina gore dikkat gerektiren urunler
-    ham = _tool_stok_analiz({})
-    try:
-        veri = json.loads(ham)
-        urunler = veri.get("urunler", []) if isinstance(veri, dict) else []
-    except Exception:
-        urunler = []
-
-    # Uyari gerektirenler: satis hizina gore acil olanlar VEYA esik altindakiler
-    uyari_durumlari = {"kritik", "acil", "siparis_zamani", "esik_alti_satis_yok"}
-    esik_alti = [
-        u for u in urunler
-        if u.get("durum") in uyari_durumlari or u.get("esik_altinda")
-    ]
-
-    if not esik_alti and not urunler:
-        # analiz hic calismadiysa klasik esik kontrolune don
-        try:
-            basit = json.loads(_tool_stok_durumu({}))
-            basit_liste = basit.get("urunler", []) if isinstance(basit, dict) else basit
-            if isinstance(basit_liste, list):
-                esik_alti = [u for u in basit_liste if u.get("durum") == "esik_altinda"]
-        except Exception:
-            esik_alti = []
-
-    if not esik_alti:
-        return {"var": False, "mesaj": "", "urun_sayisi": 0}
-
-    # 2) AI'dan oneri metni uret
-    ozet = []
-    for u in esik_alti:
-        parca = f"{u.get('urun')}: stok {u.get('stok')}"
-        if u.get("aylik_satis"):
-            parca += f", ayda ~{u.get('aylik_satis')} satiyor"
-        if u.get("kalan_gun") is not None:
-            parca += f", {u.get('kalan_gun')} gunluk stok kaldi"
-        if u.get("onerilen_siparis"):
-            parca += f", onerilen siparis {u.get('onerilen_siparis')} adet"
-        if u.get("tedarikci"):
-            parca += f", tedarikci {u.get('tedarikci')}"
-        if u.get("guven") == "dusuk":
-            parca += " (tahmin az veriye dayaniyor, guven dusuk)"
-        elif u.get("guven") == "veri_yok":
-            parca += " (satis verisi yok)"
-        ozet.append(parca)
-    veri = "\n".join(ozet)
-
-    mesaj = None
-    try:
-        messages = [
-            {"role": "system", "content": (
-                "Sen bir stok asistanisin. Verilen urunler icin "
-                "kisa, net bir Turkce uyari metni yaz. "
-                "MUTLAKA urun adini yazarak baslat (orn: 'Takim urununun stogu...'). "
-                "Her urun icin: kac adet kaldi, ayda ne kadar satiyor, kac gun yeter, "
-                "kac adet siparis onerilir, hangi tedarikciden. 'Esik' kelimesini KULLANMA. "
-                "2-3 cumleyi gecme. JSON veya teknik detay yazma, sadece dogal uyari metni."
-            )},
-            {"role": "user", "content": f"Esik alti urunler:\n{veri}"},
-        ]
-        key = _groq_key()
-        if key:
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-            body = {"model": _groq_model(), "messages": messages, "temperature": 0.2}
-            r = requests.post(GROQ_URL, headers=headers, json=body, timeout=30)
-            data = r.json()
-            if "choices" in data:
-                mesaj = (data["choices"][0]["message"].get("content") or "").strip()
-    except Exception:
-        mesaj = None
-
-    # urun adlari
-    urun_adlari = ", ".join(u.get("urun", "") for u in esik_alti)
-
-    if not mesaj:
-        # AI cevap vermezse basit metin
-        mesaj = (f"Su urunler yeniden siparis esiginin altinda: {urun_adlari}. "
-                 "Lutfen siparis veriniz.")
-
-    # 3) Cana TEK kayit dusur — urun bazli benzersiz subject, tekrar ekleme
-    try:
-        kullanici = frappe.session.user
-        # benzersiz subject: hangi urunler etkilendigini goster
-        subject = f"Stok Uyarisi: {urun_adlari} — yeniden siparis gerekli"
-        mevcut = frappe.get_all(
-            "Notification Log",
-            filters={
-                "for_user": kullanici,
-                "subject": subject,
-                "read": 0,
-            },
-            limit_page_length=1,
-        )
-        if not mevcut:
-            log = frappe.new_doc("Notification Log")
-            log.subject = subject
-            log.email_content = mesaj
-            log.for_user = kullanici
-            log.type = "Alert"
-            # tiklayinca Stok Bakiyesi raporuna gitsin
-            # (alan bu ERPNext surumunde varsa)
-            try:
-                meta = frappe.get_meta("Notification Log")
-                if meta.get_field("link"):
-                    log.link = "/app/query-report/Stock Balance"
-                else:
-                    log.document_type = "Item"
-            except Exception:
-                pass
-            log.insert(ignore_permissions=True)
-            frappe.db.commit()
-    except Exception:
-        # cana yazma basarisiz olsa bile pop-up calismali
-        pass
-
-    # Frontend'in kart olarak gosterebilmesi icin yapilandirilmis detay
-    detaylar = []
-    for u in esik_alti:
-        detaylar.append({
-            "urun": u.get("urun"),
-            "stok": u.get("stok"),
-            "esik": u.get("esik"),
-            "aylik_satis": u.get("aylik_satis"),
-            "kalan_gun": u.get("kalan_gun"),
-            "durum": u.get("durum"),
-            "onerilen_siparis": u.get("onerilen_siparis"),
-            "tedarikci": u.get("tedarikci"),
-            "gerekce": u.get("gerekce"),
-            "guven": u.get("guven"),
-            "esik_altinda": u.get("esik_altinda"),
-            "fatura_sayisi": u.get("fatura_sayisi"),
-        })
-
-    return {
-        "var": True,
-        "mesaj": mesaj,
-        "urun_sayisi": len(esik_alti),
-        "urunler": detaylar,
     }
 
 
