@@ -1503,7 +1503,12 @@ def _system_prompt(context=None):
         "- Lead'de gecmis/sadakat olmaz, standart fiyat kullanilir.\n"
         "- Sektor NEGATIF (indirim) ise sadakat indirimi HIC UYGULANMAZ, "
         "cirosu yuksek olsa bile 0 cikar -- bu bir hata degil, kural boyle "
-        "(iki indirim ust uste binmesin diye). Sorulursa boyle acikla.\n"
+        "(iki indirim ust uste binmesin diye). sadakat_indirim_yuzde:0 VE "
+        "sektor_ayari_yuzde NEGATIF ise, aciklamada BUNU HER ZAMAN (sorulmasa "
+        "bile) belirt: 'sektor indirimi zaten uygulandigi icin sadakat "
+        "indirimi ayrica eklenmedi' gibi. 'gecmis cirosu yok/musteri yeni' "
+        "GIBI BASKA BIR SEBEP UYDURMA -- ciroya bakilmadan devre disi "
+        "birakilmistir, sebep SADECE sektorun negatif olmasidir.\n"
         "\n"
         "IK METINLERI:\n"
         "- Is tanimi: Pozisyon Ozeti, Temel Sorumluluklar (5-7), Aranan "
@@ -1558,12 +1563,17 @@ def _fiyat_sayi_dogrula(cevap, fiyat_hedef):
     hesapladigi sonucla karsilastirir.
 
     NEDEN VAR: LLM'ler coklu adimli aritmetigi guvenilir sekilde
-    HESAPLAYAMAZ, sadece "tahmin eder". Canli bir testte motor 3.746,62 TL
-    donerken, ayni cevapta AI 37.746,20 TL (yaklasik 10 kati, basamaklari
-    karismis) soyledi -- kod hicbir zaman yanlis degildi, sadece dogal dile
-    cevirirken LLM kendi kafasindan bir rakam uretti. Bu fonksiyon o sonucu
-    ASLA yeniden hesaplamaz; yalnizca cevaptaki rakamlarin motorun kendi
-    ciktisiyla eslesip eslesmedigini dogrular.
+    HESAPLAYAMAZ, sadece "tahmin eder". Iki farkli canli testte:
+      - motor 3.746,62 TL donerken AI 37.746,20 TL (~10 kati, basamaklari
+        karismis) soyledi.
+      - motor 33.250,00 TL (Yillik periyotlu bir urun, miktar=12 zaten
+        oranlanmis) donerken AI bunu "aylik" sanip 12 ile CARPARAK
+        399.000,00 TL "yillik toplam" diye sundu -- DOGRU rakami (33.250)
+        da ayni cevapta soyledigi icin basit "cevapta dogru rakam var mi"
+        kontrolu bunu YAKALAYAMADI (asagidaki katsayi kontrolu bunun icin
+        eklendi).
+    Bu fonksiyon sonucu ASLA yeniden hesaplamaz; yalnizca cevaptaki
+    rakamlarin motorun kendi ciktisiyla eslesip eslesmedigini dogrular.
 
     fiyat_hedef: en az "toplam_nihai" (ve varsa "onerilen_fiyat") iceren
     bir sozluk. Yoksa/eksikse kontrol atlanir (yanlis pozitif vermemek icin).
@@ -1580,17 +1590,35 @@ def _fiyat_sayi_dogrula(cevap, fiyat_hedef):
     if not bulunanlar:
         return cevap  # cevapta hic TL rakami yoksa dogrulanacak bir sey yok
 
-    def esleser(b, h):
-        return abs(b - h) / abs(h) < 0.01 if h else b == 0  # %1 tolerans
+    def yakin(a, b, tol=0.01):
+        return abs(a - b) / abs(b) < tol if b else a == 0  # %1 tolerans
 
-    if any(esleser(b, h) for b in bulunanlar for h in hedefler):
-        return cevap  # en az bir rakam gercek sonucla eslesiyor, guvenli
+    # 1) BILINEN KARISMA KATSAYILARI: LLM'in ay<->yil karistirdigi durumlarda
+    # gercek deger x12/12/x10/10 olarak da metinde gecebilir. Boyle bir
+    # deger varsa, DOGRU bir rakam ayni cevapta gecse bile SUPHELI sayilir --
+    # cunku hangi rakamin "nihai/toplam" diye sunuldugu belirsizdir ve
+    # kullanici yanlis olani (399.000) gorebilir.
+    supheli_katsayilar = (12, 1 / 12, 10, 1 / 10)
+    for b in bulunanlar:
+        for h in hedefler:
+            for k in supheli_katsayilar:
+                if yakin(b, h * k) and not yakin(b, h):
+                    return _fiyat_duzeltme_metni(fiyat_hedef, cevap)
 
-    # Hicbir rakam tutmuyor -- LLM'in kendi kafasindan uydurdugu belli.
+    # 2) Normal eslesme: en az bir rakam gercek sonuca uyuyor mu?
+    if any(yakin(b, h) for b in bulunanlar for h in hedefler):
+        return cevap
+
+    # 3) Hicbir rakam tutmuyor -- LLM'in kendi kafasindan uydurdugu belli.
+    return _fiyat_duzeltme_metni(fiyat_hedef, cevap)
+
+
+def _fiyat_duzeltme_metni(fiyat_hedef, eski_cevap):
+    """Sayisal tutarsizlik tespit edildiginde loglar ve dogru cevabi uretir."""
     try:
         frappe.log_error(
             title="Fiyat cevabinda sayisal tutarsizlik",
-            message=f"cevap={cevap[:300]} | hedef={fiyat_hedef}",
+            message=f"cevap={eski_cevap[:300]} | hedef={fiyat_hedef}",
         )
     except Exception:
         pass
@@ -1605,6 +1633,8 @@ def _fiyat_sayi_dogrula(cevap, fiyat_hedef):
         duzeltme = " ".join(parcalar)
 
     return "(Az once soyledigim rakam yanlis hesaplanmisti, duzeltiyorum.)\n\n" + duzeltme
+
+
 
 
 def _dogruluk_kontrolu(cevap, form_taslak):
