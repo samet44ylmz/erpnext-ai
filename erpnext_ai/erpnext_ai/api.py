@@ -961,6 +961,7 @@ def _tool_fiyat_onerisi(args):
     sonuc = {
         "gecmis_var": gecmis_var,
         "miktar": miktar,
+        "hizmet_mi": hizmet_mi_hesap,
         "taban_birim_fiyat_sektor_oncesi": taban_fiyat_sektor_oncesi,
         "sektor_ayari_yuzde": sektor_yuzde,
         "sektor_grubu": sektor_grubu,
@@ -1557,6 +1558,12 @@ def _tl_sayi_coz(s):
         return None
 
 
+def _tl_bicimle(x):
+    """Sayiyi TR bicimine cevirir: 4275000.0 -> '4.275.000,00'."""
+    tam, ondalik = f"{x:,.2f}".split(".")
+    return tam.replace(",", ".") + "," + ondalik
+
+
 def _fiyat_sayi_dogrula(cevap, fiyat_hedef):
     """
     AI'nin cevabinda soyledigi TL tutarlarini, fiyat motorunun GERCEKTEN
@@ -1625,12 +1632,26 @@ def _fiyat_duzeltme_metni(fiyat_hedef, eski_cevap):
 
     duzeltme = _yenileme_gerekce_metni(fiyat_hedef) if fiyat_hedef.get("tam_veri") else ""
     if not duzeltme:
-        parcalar = [f"Nihai tutar: {fiyat_hedef.get('toplam_nihai'):,.2f} TL.".replace(",", ".")]
+        parcalar = [f"Nihai tutar: {_tl_bicimle(fiyat_hedef.get('toplam_nihai'))} TL."]
         if fiyat_hedef.get("onerilen_fiyat"):
             parcalar.append(
-                f"Birim/onerilen fiyat: {fiyat_hedef.get('onerilen_fiyat'):,.2f} TL.".replace(",", ".")
+                f"Birim/onerilen fiyat: {_tl_bicimle(fiyat_hedef.get('onerilen_fiyat'))} TL."
             )
         duzeltme = " ".join(parcalar)
+
+    # ONEMLI: duzeltilmis cevap hangi SURE/MIKTAR icin gecerli oldugunu
+    # ACIKCA belirtmeli -- yoksa kullanici (ve bir sonraki turda AI'nin
+    # kendisi) hangi donem icin oldugunu anlayamaz, konusma baglami bozulur.
+    # Canli testte tam bu yuzden "2 yillik miydi?" belirsizligi yasandi.
+    miktar = fiyat_hedef.get("miktar")
+    if miktar:
+        if fiyat_hedef.get("hizmet_mi"):
+            yil = miktar / 12
+            yil_metni = f" ({yil:g} yil)" if yil != 1 else " (1 yil)"
+            sure_notu = f"Bu tutar {miktar} ay{yil_metni} icin hesaplanmistir."
+        else:
+            sure_notu = f"Bu tutar {miktar} adet icin hesaplanmistir."
+        duzeltme = sure_notu + " " + duzeltme
 
     return "(Az once soyledigim rakam yanlis hesaplanmisti, duzeltiyorum.)\n\n" + duzeltme
 
@@ -1801,6 +1822,8 @@ def ask(question, context=None, gecmis=None):
                         son_fiyat_hedef = {
                             "toplam_nihai": ozet.get("toplam_fiyat"),
                             "onerilen_fiyat": ozet.get("birim_fiyat"),
+                            "miktar": ozet.get("miktar"),
+                            "hizmet_mi": ozet.get("sure_bazli"),
                             "tam_veri": False,
                         }
                 except Exception:
