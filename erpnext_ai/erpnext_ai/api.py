@@ -12,6 +12,7 @@ GUVENLIK:
 
 import json
 import os
+import re
 import time
 from datetime import date, timedelta
 
@@ -1468,6 +1469,14 @@ def _system_prompt(context=None):
         "docstatus:1. Tutarlar TL formatinda (45.200,00 TL). Veri UYDURMA. "
         "JSON/ham cikti GOSTERME, dogal cumle kur. Listelerde az alan iste.\n"
         "\n"
+        "FIYAT SORGUSU (fiyat_onerisi, taslak DEGIL):\n"
+        "- HIZMET (SRV-) urunlerde miktar = AY SAYISIDIR. Kullanici 'X icin "
+        "fiyat oner' derken sure belirtmediyse (aylik mi yillik mi, kac ay) "
+        "MIKTAR GONDERMEDEN araci CAGIRMA -- once 'Kac aylik/yillik bir fiyat "
+        "istersiniz?' diye SOR. Sureyi bilmeden verilen fiyat yaniltici olur.\n"
+        "- Urun/lisans (PRM-) urunlerde miktar = ADETTIR, sure kavrami yok; "
+        "adet belirtilmediyse '1 adet icin mi?' diye netlestir.\n"
+        "\n"
         "TEKLIF/FATURA:\n"
         "- 'teklif' -> teklif_taslagi. 'fatura' -> fatura_taslagi.\n"
         "- TEKLIF'te (teklif_taslagi) KDV/tevkifat HICBIR ZAMAN SORULMAZ, "
@@ -1530,6 +1539,72 @@ _TASLAK_IDDIA_KALIPLARI = (
     "taslaktır, gözden", "taslaktir, gozden",
     "taslaktır, kaydedebilir", "taslaktir, kaydedebilir",
 )
+
+
+_TL_SAYI_DESENI = re.compile(r"(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)\s*TL")
+
+
+def _tl_sayi_coz(s):
+    """TR bicimindeki '45.000,00' gibi bir metni float'a cevirir."""
+    try:
+        return float(s.replace(".", "").replace(",", "."))
+    except Exception:
+        return None
+
+
+def _fiyat_sayi_dogrula(cevap, fiyat_hedef):
+    """
+    AI'nin cevabinda soyledigi TL tutarlarini, fiyat motorunun GERCEKTEN
+    hesapladigi sonucla karsilastirir.
+
+    NEDEN VAR: LLM'ler coklu adimli aritmetigi guvenilir sekilde
+    HESAPLAYAMAZ, sadece "tahmin eder". Canli bir testte motor 3.746,62 TL
+    donerken, ayni cevapta AI 37.746,20 TL (yaklasik 10 kati, basamaklari
+    karismis) soyledi -- kod hicbir zaman yanlis degildi, sadece dogal dile
+    cevirirken LLM kendi kafasindan bir rakam uretti. Bu fonksiyon o sonucu
+    ASLA yeniden hesaplamaz; yalnizca cevaptaki rakamlarin motorun kendi
+    ciktisiyla eslesip eslesmedigini dogrular.
+
+    fiyat_hedef: en az "toplam_nihai" (ve varsa "onerilen_fiyat") iceren
+    bir sozluk. Yoksa/eksikse kontrol atlanir (yanlis pozitif vermemek icin).
+    """
+    if not fiyat_hedef:
+        return cevap
+    hedefler = [fiyat_hedef.get("toplam_nihai"), fiyat_hedef.get("onerilen_fiyat")]
+    hedefler = [h for h in hedefler if h]
+    if not hedefler:
+        return cevap
+
+    bulunanlar = [_tl_sayi_coz(m) for m in _TL_SAYI_DESENI.findall(cevap)]
+    bulunanlar = [b for b in bulunanlar if b is not None]
+    if not bulunanlar:
+        return cevap  # cevapta hic TL rakami yoksa dogrulanacak bir sey yok
+
+    def esleser(b, h):
+        return abs(b - h) / abs(h) < 0.01 if h else b == 0  # %1 tolerans
+
+    if any(esleser(b, h) for b in bulunanlar for h in hedefler):
+        return cevap  # en az bir rakam gercek sonucla eslesiyor, guvenli
+
+    # Hicbir rakam tutmuyor -- LLM'in kendi kafasindan uydurdugu belli.
+    try:
+        frappe.log_error(
+            title="Fiyat cevabinda sayisal tutarsizlik",
+            message=f"cevap={cevap[:300]} | hedef={fiyat_hedef}",
+        )
+    except Exception:
+        pass
+
+    duzeltme = _yenileme_gerekce_metni(fiyat_hedef) if fiyat_hedef.get("tam_veri") else ""
+    if not duzeltme:
+        parcalar = [f"Nihai tutar: {fiyat_hedef.get('toplam_nihai'):,.2f} TL.".replace(",", ".")]
+        if fiyat_hedef.get("onerilen_fiyat"):
+            parcalar.append(
+                f"Birim/onerilen fiyat: {fiyat_hedef.get('onerilen_fiyat'):,.2f} TL.".replace(",", ".")
+            )
+        duzeltme = " ".join(parcalar)
+
+    return "(Az once soyledigim rakam yanlis hesaplanmisti, duzeltiyorum.)\n\n" + duzeltme
 
 
 def _dogruluk_kontrolu(cevap, form_taslak):
@@ -1623,6 +1698,7 @@ def ask(question, context=None, gecmis=None):
 
     adimlar = []
     form_taslak = None
+    son_fiyat_hedef = None  # _fiyat_sayi_dogrula icin: en son hesaplanan fiyat
 
     for _step in range(MAX_STEPS):
         data = _groq_call(messages)
@@ -1643,6 +1719,7 @@ def ask(question, context=None, gecmis=None):
 
         if not calls:
             cevap = (msg.get("content") or "").strip() or "(cevap uretilemedi)"
+            cevap = _fiyat_sayi_dogrula(cevap, son_fiyat_hedef)
             cevap = _dogruluk_kontrolu(cevap, form_taslak)
             return {
                 "cevap": cevap,
@@ -1670,6 +1747,32 @@ def ask(question, context=None, gecmis=None):
                     parsed = json.loads(result)
                     if isinstance(parsed, dict) and parsed.get("_action") == "form_taslak":
                         form_taslak = parsed
+                except Exception:
+                    pass
+
+            # Fiyatla ilgili herhangi bir arac calistiysa, sonucunu sakla --
+            # AI'nin son cevabindaki rakamlari _fiyat_sayi_dogrula ile
+            # karsilastirmak icin. fiyat_onerisi TAM detay dondurur (tam_veri
+            # isaretlenir); teklif/fatura_taslagi ise ozetteki toplam/birim
+            # fiyati kullanir (daha az detayli ama yine de dogrulamaya yeter).
+            if name == "fiyat_onerisi":
+                try:
+                    parsed = json.loads(result)
+                    if isinstance(parsed, dict) and "toplam_nihai" in parsed:
+                        parsed["tam_veri"] = True
+                        son_fiyat_hedef = parsed
+                except Exception:
+                    pass
+            elif name in ("teklif_taslagi", "fatura_taslagi"):
+                try:
+                    parsed = json.loads(result)
+                    ozet = parsed.get("ozet") if isinstance(parsed, dict) else None
+                    if ozet and ozet.get("toplam_fiyat"):
+                        son_fiyat_hedef = {
+                            "toplam_nihai": ozet.get("toplam_fiyat"),
+                            "onerilen_fiyat": ozet.get("birim_fiyat"),
+                            "tam_veri": False,
+                        }
                 except Exception:
                     pass
 
