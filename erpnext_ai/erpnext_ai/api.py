@@ -655,6 +655,42 @@ def _standart_fiyat(urun_kodu):
         return None
 
 
+def _urun_hesap_modu(urun_kodu, ai_sure_bazli=None):
+    """
+    Bir urunun SURE bazli mi (ay/yil orantili) yoksa ADET bazli mi
+    hesaplanacagini belirler.
+
+    ARTIK KULLANICININ SOZUNE DEGIL, urunun KENDI 'Fiyat Periyodu'
+    alanina bakar -- once bu kullanicinin sozune (sure_bazli) gore
+    belirleniyordu, bu da "6 aylik lisans" gibi ifadelerde bir LISANS
+    urununu (Tek Seferlik) sanki yillik bir hizmetmis gibi 6/12'ye bolup
+    hayali bir "aylik birim fiyat" uretiyordu.
+
+    Kural:
+      - "Tek Seferlik (Adet/Lisans)" -> HER ZAMAN adet bazli (False).
+        Kullanici '6 aylik' dese bile bu urunun suresi YOKTUR, sadece
+        adet carpimi yapilir -- lisans bedeli zaten tam/yillik bedeldir.
+      - "Yillik" / "Aylik" -> HER ZAMAN sure bazli (True).
+      - Alan BOS/tanimsizsa (eski kayitlar) -> geriye donuk uyumluluk:
+        AI'nin gonderdigi sure_bazli varsa onu, yoksa SRV- onekini kullan.
+
+    Donus: (hizmet_mi_hesap: bool, periyot: str|None)
+    """
+    try:
+        periyot = frappe.db.get_value("Item", urun_kodu, "custom_fiyat_periyodu")
+    except Exception:
+        periyot = None
+
+    if periyot == "Tek Seferlik (Adet/Lisans)":
+        return False, periyot
+    if periyot in ("Yillik", "Aylik"):
+        return True, periyot
+
+    if ai_sure_bazli is not None:
+        return bool(ai_sure_bazli), periyot
+    return urun_kodu.startswith("SRV-"), periyot
+
+
 def _normalize_tr(s):
     """Turkce karakterleri sadelestirip kucuk harfe cevirir (esnek karsilastirma icin)."""
     if not s:
@@ -884,20 +920,12 @@ def _tool_fiyat_onerisi(args):
     if sektor_yuzde:
         taban_fiyat = round(taban_fiyat * (1 + sektor_yuzde / 100.0), 2)
 
-    # --- 2) TOPLAM tutar: SURE BAZLI ise urunin GERCEK 'Fiyat Periyodu'
-    # alanina bakilir (Yillik/Aylik) -- artik SRV-/PRM- onekinden VARSAYIM
-    # yapilmiyor. Alan bos/tanimsizsa Yillik varsayilir (eski davranisla
-    # ayni, geriye donuk uyumlu).
-    if "sure_bazli" in args:
-        hizmet_mi_hesap = bool(args.get("sure_bazli"))
-    else:
-        hizmet_mi_hesap = urun.startswith("SRV-")
+    # --- 2) TOPLAM tutar: hesap modu ARTIK urunun KENDI 'Fiyat Periyodu'
+    # alanindan belirlenir (kullanicinin sozunden DEGIL) -- bkz. _urun_hesap_modu.
+    ai_sure_bazli = args.get("sure_bazli") if "sure_bazli" in args else None
+    hizmet_mi_hesap, periyot = _urun_hesap_modu(urun, ai_sure_bazli)
 
     if hizmet_mi_hesap:
-        try:
-            periyot = frappe.db.get_value("Item", urun, "custom_fiyat_periyodu")
-        except Exception:
-            periyot = None
         if periyot == "Aylik":
             # standart_rate ZATEN aylik -- oranlamaya (12'ye bolmeye) GEREK YOK.
             toplam_oncesi = round(taban_fiyat * miktar, 2)
@@ -1062,7 +1090,7 @@ def _tool_fatura_taslagi(args):
     musteri_girilen = args.get("musteri")
     urun = args.get("urun")
     miktar = args.get("miktar") or 1
-    sure_bazli = bool(args.get("sure_bazli"))
+    ai_sure_bazli = args.get("sure_bazli")
     kdv_dahil = bool(args.get("kdv_dahil"))
     tevkifatli = bool(args.get("tevkifatli"))
     tevkifat_amaci = args.get("tevkifat_amaci")
@@ -1081,6 +1109,10 @@ def _tool_fatura_taslagi(args):
                 "surecinden gecmesi gerekir.")
     if not frappe.db.exists("Item", urun_cozulmus):
         return f"'{urun}' adinda kayitli bir urun bulunamadi."
+
+    # ARTIK URUNUN KENDI 'Fiyat Periyodu' alani KARAR VERIR -- bkz.
+    # _urun_hesap_modu / teklif_taslagi'ndaki ayni mantik.
+    sure_bazli, _periyot = _urun_hesap_modu(urun_cozulmus, ai_sure_bazli)
 
     try:
         fiyat_ham = _tool_fiyat_onerisi({
@@ -1203,7 +1235,8 @@ def _tool_teklif_taslagi(args):
     musteri_girilen = args.get("musteri")
     urun = args.get("urun")
     miktar = args.get("miktar") or 1
-    sure_bazli = bool(args.get("sure_bazli"))
+    ai_sure_bazli = args.get("sure_bazli")  # AI'nin tahmini -- urunun kendi
+                                             # periyodu bos oldugunda yedek olur
 
     if not musteri_girilen or not urun:
         return "Musteri ve urun bilgisi gerekli."
@@ -1218,6 +1251,12 @@ def _tool_teklif_taslagi(args):
                 "potansiyel musteri (Lead) bulunamadi.")
     if not frappe.db.exists("Item", urun_cozulmus):
         return f"'{urun}' adinda kayitli bir urun bulunamadi."
+
+    # ARTIK URUNUN KENDI 'Fiyat Periyodu' alani KARAR VERIR (kullanicinin
+    # sozu sadece alan bos kalmissa yedek olur) -- bkz. _urun_hesap_modu.
+    # Boylece "6 aylik lisans" gibi bir ifade, gercekte Tek Seferlik olan
+    # bir urunu sanki sureye bolunuyormus gibi YANLIS hesaplamaz.
+    sure_bazli, _periyot = _urun_hesap_modu(urun_cozulmus, ai_sure_bazli)
 
     # Orijinal (kullanicinin yazdigi) musteri metnini yolluyoruz; fiyat_onerisi
     # kendi icinde tekrar cozer -- Lead'in sistem kimligini degil, yazilan
@@ -1246,7 +1285,6 @@ def _tool_teklif_taslagi(args):
     if sure_bazli:
         # SURE BAZLI: adet HER ZAMAN 1; sure GERCEK TARIH ALANLARINA yazilir
         # (custom_hizmet_baslangic / custom_hizmet_bitis), fiyat TOPLAM'dir.
-        # Urun kodu (SRV-/PRM-) ONEMLI DEGIL -- karar kullanicinin sozune gore verildi.
         bugun = frappe.utils.getdate()
         bitis = frappe.utils.add_months(bugun, miktar)
         urun_adi = frappe.db.get_value("Item", urun_cozulmus, "item_name") or urun_cozulmus
@@ -1293,7 +1331,6 @@ TOOL_FNS = {
     "form_doldur": _tool_form_doldur,
     "stok_durumu": _tool_stok_durumu,
     "stok_analiz": _tool_stok_analiz,
-    "fiyat_onerisi": _tool_fiyat_onerisi,
     "teklif_taslagi": _tool_teklif_taslagi,
     "fatura_taslagi": _tool_fatura_taslagi,
 }
@@ -1346,41 +1383,29 @@ TOOLS_SPEC = [
         }, "required": ["doctype"]},
     }},
     {"type": "function", "function": {
-        "name": "fiyat_onerisi",
-        "description": (
-            "SADECE fiyat sorulduysa (teklif/fatura taslagi istenmiyorsa) "
-            "kullan. Gecmis alim + enflasyon/kur veya standart fiyat, "
-            "sektor ayari ve sadakat indirimiyle fiyat hesaplar."
-        ),
-        "parameters": {"type": "object", "properties": {
-            "musteri": {"type": "string", "description": "Musteri adi"},
-            "urun": {"type": "string", "description": "Urun adi veya kodu, orn: Takim veya 1234"},
-            "miktar": {"type": "integer", "description": (
-                "Siparis miktari (varsayilan 1). Buyuk siparis indirimi bu "
-                "miktara gore hesaplanir, o yuzden bilinen miktari MUTLAKA gonder."
-            )},
-        }, "required": ["musteri", "urun"]},
-    }},
-    {"type": "function", "function": {
         "name": "teklif_taslagi",
         "description": (
             "Quotation (teklif) taslagi hazirlar. Musteri/Lead ve urun "
-            "isimlerini otomatik cozer, fiyati hesaplar. Teklif isteklerinde "
-            "form_doldur YERINE bunu kullan. KDV/tevkifat SORMA, bunu cagirmak "
-            "icin hicbir on-soru gerekmez, direkt cagir."
+            "isimlerini otomatik cozer, fiyati hesaplar. Fiyat sorulsun/teklif "
+            "istensin farketmez -- HER IKISINDE DE bunu kullan (ayri bir "
+            "'sadece fiyat soyle' araci yok). form_doldur YERINE bunu kullan. "
+            "KDV/tevkifat SORMA, bunu cagirmak icin hicbir on-soru gerekmez, "
+            "direkt cagir."
         ),
         "parameters": {"type": "object", "properties": {
             "musteri": {"type": "string"},
             "urun": {"type": "string"},
             "miktar": {"type": "integer", "description": (
-                "Kullanicinin belirttigi sayidir. 'sure_bazli'=true ise bu AY "
-                "SAYISIDIR ('6 aylik' -> 6, '1 yillik' -> 12). 'sure_bazli'=false "
-                "ise bu ADET/LISANS sayisidir ('50 lisans' -> 50)."
+                "Kullanicinin belirttigi sayidir. Urun 'Yillik/Aylik' ise AY "
+                "SAYISIDIR ('6 aylik' -> 6, '1 yillik' -> 12). Urun 'Tek "
+                "Seferlik (Adet/Lisans)' ise ADET sayisidir ('50 lisans' -> 50)."
             )},
             "sure_bazli": {"type": "boolean", "description": (
-                "'ay/yil' gecerse true (yillik fiyattan oranli, adet=1). "
-                "'adet/lisans' gecerse false (birim x adet). Urun koduna DEGIL, "
-                "kullanicinin sozune bak."
+                "Tahmininiz: 'ay/yil' gecerse true, 'adet/lisans' gecerse "
+                "false. NOT: urunun kendi Fiyat Periyodu alani tanimliysa "
+                "(cogu urunde tanimlidir) kod bu tahmini GORMEZDEN GELIR ve "
+                "dogru modu kendisi uygular -- yanlis tahmin etseniz bile "
+                "sonuc dogru cikar."
             )},
         }, "required": ["musteri", "urun", "sure_bazli"]},
     }},
@@ -1470,16 +1495,25 @@ def _system_prompt(context=None):
         "docstatus:1. Tutarlar TL formatinda (45.200,00 TL). Veri UYDURMA. "
         "JSON/ham cikti GOSTERME, dogal cumle kur. Listelerde az alan iste.\n"
         "\n"
-        "FIYAT SORGUSU (fiyat_onerisi, taslak DEGIL):\n"
-        "- HIZMET (SRV-) urunlerde miktar = AY SAYISIDIR. Kullanici 'X icin "
-        "fiyat oner' derken sure belirtmediyse (aylik mi yillik mi, kac ay) "
-        "MIKTAR GONDERMEDEN araci CAGIRMA -- once 'Kac aylik/yillik bir fiyat "
-        "istersiniz?' diye SOR. Sureyi bilmeden verilen fiyat yaniltici olur.\n"
-        "- Urun/lisans (PRM-) urunlerde miktar = ADETTIR, sure kavrami yok; "
-        "adet belirtilmediyse '1 adet icin mi?' diye netlestir.\n"
-        "\n"
         "TEKLIF/FATURA:\n"
-        "- 'teklif' -> teklif_taslagi. 'fatura' -> fatura_taslagi.\n"
+        "- 'fiyat oner', 'teklif' -> HER ZAMAN teklif_taslagi (ayri bir "
+        "'sadece fiyat soyle' modu YOK). 'fatura' -> fatura_taslagi.\n"
+        "- HESAP MODU (sure mu adet mi) ARTIK urunun KENDI 'Fiyat Periyodu' "
+        "alanindan belirlenir, kullanicinin sozunden DEGIL:\n"
+        "  * 'Tek Seferlik (Adet/Lisans)' urunlerde SURE KAVRAMI YOKTUR, "
+        "miktar HER ZAMAN ADETTIR. Kullanici '6 aylik' gibi bir SURE ifadesi "
+        "kullanirsa, o sayiyi SESSIZCE adet SANMA -- bu urun sureye degil "
+        "adet/lisans bazli satiliyor, once 'Bu urun sure degil adet/lisans "
+        "bazli satiliyor, kac adet/lisans istersiniz?' diye SOR. Adet "
+        "belirtilmis ama sure kelimesi gecmiyorsa (orn. '50 lisans') dogrudan "
+        "o sayiyi adet olarak kullan.\n"
+        "  * 'Yillik'/'Aylik' urunlerde miktar = AY SAYISIDIR, sureye orantili "
+        "hesaplanir. Sure belirtilmediyse 'Kac aylik/yillik istersiniz?' "
+        "diye ONCE SOR, tahmin etme.\n"
+        "  * sure_bazli parametresini yine de gonderin (tahmininiz) -- ama "
+        "urunun periyodu tanimliysa kod sizin tahmininizi GORMEZDEN GELIR "
+        "ve dogru modu kendi uygular; miktar sayisi DOGRU anlamda (adet ya "
+        "da ay) gonderildigi surece sonuc dogru cikar.\n"
         "- TEKLIF'te (teklif_taslagi) KDV/tevkifat HICBIR ZAMAN SORULMAZ, "
         "bu konu teklifle ilgisizdir -- direkt arac cagrilir.\n"
         "- SADECE fatura_taslagi'ndan ONCE sor: KDV dahil mi? Tevkifat var mi? "
@@ -1492,11 +1526,6 @@ def _system_prompt(context=None):
         "taslak sunmadan ONCE YUKSEK SESLE uyar -- 'DIKKAT: Bu fiyat (X TL) "
         "urunun maliyetinin (Y TL) altinda, zararina satis riski var!' de ve "
         "'Yine de devam edeyim mi?' diye SOR. Onay gelmeden taslak acma.\n"
-        "- sure_bazli karari URUN KODUNA DEGIL kullanicinin sozune bakar: "
-        "'ay/yil' gecerse true (miktar=ay sayisi). 'adet/lisans' gecerse false "
-        "(birim x adet). Belirsizse sor. Yillik/aylik oranlama Item'in KENDI "
-        "'Fiyat Periyodu' alanindan okunur (varsayilan Yillik) -- kod tahmin "
-        "etmez, veriye bakar.\n"
         "- Sayiyi ('6 aylik', '50 lisans') MUTLAKA miktar'a koy. Yil -> ay (1 yil=12).\n"
         "- Aciklarken belirt: gecmis fiyat + enflasyon/kur farki, sektor ayari "
         "(sektor_gerekce'yi temel al ama her seferinde FARKLI kelimelerle anlat), "
@@ -1801,20 +1830,10 @@ def ask(question, context=None, gecmis=None):
                 except Exception:
                     pass
 
-            # Fiyatla ilgili herhangi bir arac calistiysa, sonucunu sakla --
-            # AI'nin son cevabindaki rakamlari _fiyat_sayi_dogrula ile
-            # karsilastirmak icin. fiyat_onerisi TAM detay dondurur (tam_veri
-            # isaretlenir); teklif/fatura_taslagi ise ozetteki toplam/birim
-            # fiyati kullanir (daha az detayli ama yine de dogrulamaya yeter).
-            if name == "fiyat_onerisi":
-                try:
-                    parsed = json.loads(result)
-                    if isinstance(parsed, dict) and "toplam_nihai" in parsed:
-                        parsed["tam_veri"] = True
-                        son_fiyat_hedef = parsed
-                except Exception:
-                    pass
-            elif name in ("teklif_taslagi", "fatura_taslagi"):
+            # Fiyatla ilgili bir arac calistiysa (teklif/fatura_taslagi),
+            # sonucunu sakla -- AI'nin son cevabindaki rakamlari
+            # _fiyat_sayi_dogrula ile karsilastirmak icin.
+            if name in ("teklif_taslagi", "fatura_taslagi"):
                 try:
                     parsed = json.loads(result)
                     ozet = parsed.get("ozet") if isinstance(parsed, dict) else None
@@ -2179,15 +2198,26 @@ def sozlesme_kontrolu(sadece_acil=None, hafif=None):
         taraf_turu = s.get("party_type")
         if urun_kodu and madde["taraf"] and taraf_turu in ("Customer", None, ""):
             try:
+                # ONEMLI: hesap modu (sure/adet) artik urunun KENDI periyoduna
+                # gore belirleniyor (bkz. _urun_hesap_modu). Eskiden buraya
+                # HER URUN icin sabit miktar=12 gonderiliyordu -- SURE bazli
+                # urunlerde bu "1 yillik yenileme" demekti (dogru), ama ADET
+                # bazli (Tek Seferlik/Lisans) bir urunde ayni sabit 12,
+                # "12 adet" olarak yorumlanip fiyati 12 KAT sisirirdi. Simdi
+                # onceden mod'u ogrenip miktari ona gore secıyoruz.
+                hizmet_mi_yenileme, _p = _urun_hesap_modu(urun_kodu)
+                yenileme_miktar = 12 if hizmet_mi_yenileme else 1
                 ham = _tool_fiyat_onerisi({
                     "musteri": madde["taraf"], "urun": urun_kodu,
-                    "miktar": 12, "sure_bazli": True,  # varsayilan: 1 yillik yenileme onerisi
+                    "miktar": yenileme_miktar, "sure_bazli": hizmet_mi_yenileme,
                 })
                 fiyat_data = json.loads(ham) if isinstance(ham, str) and ham.startswith("{") else {}
                 madde["yenileme_urun"] = urun_kodu
                 madde["yenileme_urun_adi"] = frappe.db.get_value("Item", urun_kodu, "item_name") or urun_kodu
                 madde["yenileme_fiyat"] = fiyat_data.get("toplam_nihai")
-                madde["yenileme_ay"] = 12
+                madde["yenileme_ay"] = yenileme_miktar if hizmet_mi_yenileme else 12
+                madde["yenileme_miktar"] = yenileme_miktar
+                madde["yenileme_hizmet_mi"] = hizmet_mi_yenileme
                 madde["yenileme_gerekce"] = _yenileme_gerekce_metni(fiyat_data)
             except Exception:
                 pass
