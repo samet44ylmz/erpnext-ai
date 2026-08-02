@@ -1633,7 +1633,10 @@ def _fiyat_sayi_dogrula(cevap, fiyat_hedef):
 
 
 def _fiyat_duzeltme_metni(fiyat_hedef, eski_cevap):
-    """Sayisal tutarsizlik tespit edildiginde loglar ve dogru cevabi uretir."""
+    """
+    Sayisal tutarsizlik tespit edildiginde loglar ve dogru cevabi,
+    teklif taslagindaki gibi MADDELI, baslikli formatta uretir.
+    """
     try:
         frappe.log_error(
             title="Fiyat cevabinda sayisal tutarsizlik",
@@ -1642,30 +1645,37 @@ def _fiyat_duzeltme_metni(fiyat_hedef, eski_cevap):
     except Exception:
         pass
 
-    duzeltme = _yenileme_gerekce_metni(fiyat_hedef) if fiyat_hedef.get("tam_veri") else ""
-    if not duzeltme:
-        parcalar = [f"Nihai tutar: {_tl_bicimle(fiyat_hedef.get('toplam_nihai'))} TL."]
-        if fiyat_hedef.get("onerilen_fiyat"):
-            parcalar.append(
-                f"Birim/onerilen fiyat: {_tl_bicimle(fiyat_hedef.get('onerilen_fiyat'))} TL."
-            )
-        duzeltme = " ".join(parcalar)
-
-    # ONEMLI: duzeltilmis cevap hangi SURE/MIKTAR icin gecerli oldugunu
-    # ACIKCA belirtmeli -- yoksa kullanici (ve bir sonraki turda AI'nin
-    # kendisi) hangi donem icin oldugunu anlayamaz, konusma baglami bozulur.
-    # Canli testte tam bu yuzden "2 yillik miydi?" belirsizligi yasandi.
+    # Baslik satiri: sure/miktar + toplam tutar
     miktar = fiyat_hedef.get("miktar")
+    toplam = fiyat_hedef.get("toplam_nihai")
+    birim = fiyat_hedef.get("onerilen_fiyat")
+
+    baslik_parcalari = []
     if miktar:
         if fiyat_hedef.get("hizmet_mi"):
             yil = miktar / 12
-            yil_metni = f" ({yil:g} yil)" if yil != 1 else " (1 yil)"
-            sure_notu = f"Bu tutar {miktar} ay{yil_metni} icin hesaplanmistir."
+            if yil == int(yil):
+                baslik_parcalari.append(f"{miktar} ay ({int(yil)} yil)")
+            else:
+                baslik_parcalari.append(f"{miktar} ay")
         else:
-            sure_notu = f"Bu tutar {miktar} adet icin hesaplanmistir."
-        duzeltme = sure_notu + " " + duzeltme
+            baslik_parcalari.append(f"{miktar} adet")
+    sure_metni = f" ({baslik_parcalari[0]})" if baslik_parcalari else ""
 
-    return "(Az once soyledigim rakam yanlis hesaplanmisti, duzeltiyorum.)\n\n" + duzeltme
+    satirlar = []
+    if toplam:
+        satirlar.append(f"Toplam tutar{sure_metni}: {_tl_bicimle(toplam)} TL")
+    if birim and birim != toplam:
+        satirlar.append(f"Birim fiyat: {_tl_bicimle(birim)} TL")
+
+    # Maddeli gerekce (• Gecmis fiyat / • Sektor ayari / • Sadakat / • Zarar)
+    if fiyat_hedef.get("tam_veri"):
+        maddeler = _fiyat_aciklama_maddeleri(fiyat_hedef)
+        if maddeler:
+            satirlar.append("")  # bos satir -> maddelerden once ayrac
+            satirlar.extend(maddeler)
+
+    return "\n".join(satirlar)
 
 
 
@@ -1821,13 +1831,18 @@ def ask(question, context=None, gecmis=None):
                     parsed = json.loads(result)
                     ozet = parsed.get("ozet") if isinstance(parsed, dict) else None
                     if ozet and ozet.get("toplam_fiyat"):
-                        son_fiyat_hedef = {
+                        # fiyat_kaynagi sektor/sadakat/gecmis alanlarini tasir --
+                        # bunlari da alirsak duzeltme metni SADECE toplam degil,
+                        # tam maddeli gerekce (sektor ayari, sadakat, gecmis fiyat)
+                        # ile sunulur.
+                        son_fiyat_hedef = dict(ozet.get("fiyat_kaynagi") or {})
+                        son_fiyat_hedef.update({
                             "toplam_nihai": ozet.get("toplam_fiyat"),
                             "onerilen_fiyat": ozet.get("birim_fiyat"),
                             "miktar": ozet.get("miktar"),
                             "hizmet_mi": ozet.get("sure_bazli"),
-                            "tam_veri": False,
-                        }
+                            "tam_veri": True,
+                        })
                 except Exception:
                     pass
 
@@ -2009,6 +2024,7 @@ def _fiyat_ozet_sadelestir(fiyat_data):
         "sektor_grubu": fiyat_data.get("sektor_grubu"),
         "sektor_ayari_yuzde": fiyat_data.get("sektor_ayari_yuzde"),
         "sadakat_indirim_yuzde": fiyat_data.get("sadakat_indirim_yuzde"),
+        "sadakat_cirosu_12ay": fiyat_data.get("sadakat_cirosu_12ay"),
         "kullanilan_faktor": fiyat_data.get("kullanilan_faktor"),
         "toplam_nihai": fiyat_data.get("toplam_nihai"),
         "zarar_riski": fiyat_data.get("zarar_riski"),
@@ -2076,11 +2092,13 @@ def _yenileme_gerekce_metni(fiyat_data):
 
     sadakat_yuzde = fiyat_data.get("sadakat_indirim_yuzde")
     ciro = fiyat_data.get("sadakat_cirosu_12ay")
-    if sadakat_yuzde:
+    if sadakat_yuzde and ciro is not None:
         satirlar.append(
             f"Son 12 ayda {ciro:,.0f} TL ciro yapildigi icin ".replace(",", ".") +
             f"%{sadakat_yuzde:.0f} sadakat indirimi uygulandi."
         )
+    elif sadakat_yuzde:
+        satirlar.append(f"%{sadakat_yuzde:.0f} sadakat indirimi uygulandi.")
     elif ciro is not None and ciro > 0:
         satirlar.append(f"Son 12 ay ciro ({ciro:,.0f} TL) sadakat indirimi esigine ulasmadi.".replace(",", "."))
 
@@ -2089,6 +2107,61 @@ def _yenileme_gerekce_metni(fiyat_data):
         satirlar.append(f"Nihai toplam: {toplam:,.0f} TL.".replace(",", "."))
 
     return " ".join(satirlar)
+
+
+def _fiyat_aciklama_maddeleri(fiyat_hedef):
+    """
+    Fiyat gerekcesini, kullanicinin begendigi MADDELI formatta uretir
+    (• Gecmis fiyat / • Sektor ayari / • Sadakat indirimi / • Zarar riski).
+    _fiyat_duzeltme_metni bunu kullanir; boylece bir duzeltme gerektiginde
+    kullaniciya teklif taslagindaki ayni zengin aciklama sunulur.
+    """
+    m = []
+
+    # Gecmis fiyat / standart fiyat
+    if fiyat_hedef.get("gecmis_var"):
+        eski = fiyat_hedef.get("eski_fiyat")
+        tarih = fiyat_hedef.get("eski_tarih")
+        if eski:
+            m.append(f"• Gecmis fiyat: {tarih} tarihinde {_tl_bicimle(eski)} TL kayitli.")
+        enf = fiyat_hedef.get("enflasyon_yuzde")
+        kur = fiyat_hedef.get("kur_yuzde")
+        if enf is not None or kur is not None:
+            parcalar = []
+            if enf is not None:
+                parcalar.append(f"enflasyon %{enf:.1f}")
+            if kur is not None:
+                parcalar.append(f"dolar kuru %{kur:.1f}")
+            m.append("• Enflasyon / kur farki: bu tarihten bugune " + " ve ".join(parcalar) + " degisti.")
+    else:
+        standart = fiyat_hedef.get("standart_fiyat")
+        if standart:
+            m.append(f"• Gecmis fiyat: bu musteri icin gecmis kayit yok; standart fiyat ({_tl_bicimle(standart)} TL) esas alindi.")
+
+    # Sektor ayari
+    sektor_yuzde = fiyat_hedef.get("sektor_ayari_yuzde")
+    sektor_grubu = fiyat_hedef.get("sektor_grubu")
+    if sektor_yuzde:
+        yon = "prim" if sektor_yuzde > 0 else "indirim"
+        m.append(f"• Sektor ayari: {sektor_grubu} sektorunde %{abs(sektor_yuzde):.0f} {yon} uygulandi.")
+
+    # Sadakat indirimi
+    sadakat_yuzde = fiyat_hedef.get("sadakat_indirim_yuzde")
+    ciro = fiyat_hedef.get("sadakat_cirosu_12ay")
+    if sadakat_yuzde and ciro is not None:
+        m.append(f"• Sadakat indirimi: son 12 ayda {_tl_bicimle(ciro)} TL ciro nedeniyle %{sadakat_yuzde:.0f} indirim.")
+    elif sadakat_yuzde:
+        m.append(f"• Sadakat indirimi: %{sadakat_yuzde:.0f} indirim uygulandi.")
+    elif sektor_yuzde and sektor_yuzde < 0:
+        m.append("• Sadakat indirimi: sektor indirimi zaten uygulandigi icin ek sadakat indirimi eklenmedi.")
+
+    # Zarar riski
+    if fiyat_hedef.get("zarar_riski"):
+        m.append("• Zarar riski: DIKKAT — fiyat, urun maliyetinin altinda, zararina satis riski var.")
+    elif fiyat_hedef.get("maliyet") is not None:
+        m.append("• Zarar riski: yok; fiyat maliyetin altinda degil.")
+
+    return m
 
 
 @frappe.whitelist()
