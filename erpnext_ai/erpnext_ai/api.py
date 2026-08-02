@@ -660,35 +660,28 @@ def _urun_hesap_modu(urun_kodu, ai_sure_bazli=None):
     Bir urunun SURE bazli mi (ay/yil orantili) yoksa ADET bazli mi
     hesaplanacagini belirler.
 
-    ARTIK KULLANICININ SOZUNE DEGIL, urunun KENDI 'Fiyat Periyodu'
-    alanina bakar -- once bu kullanicinin sozune (sure_bazli) gore
-    belirleniyordu, bu da "6 aylik lisans" gibi ifadelerde bir LISANS
-    urununu (Tek Seferlik) sanki yillik bir hizmetmis gibi 6/12'ye bolup
-    hayali bir "aylik birim fiyat" uretiyordu.
+    KARAR: Bu isletmede TUM urunler/lisanslar yillik/sureli satiliyor --
+    "Tek Seferlik (Adet/Lisans)" secenegi kullanilmiyor. Bu yuzden hesap
+    HER ZAMAN sure bazlidir. (Onceden urunun 'Fiyat Periyodu' alanina gore
+    adet/sure ayrimi yapiliyordu; bu, "6 aylik lisan" gibi ifadelerde
+    surekli kafa karisikligina ve yanlis hesaba yol aciyordu.)
 
-    Kural:
-      - "Tek Seferlik (Adet/Lisans)" -> HER ZAMAN adet bazli (False).
-        Kullanici '6 aylik' dese bile bu urunun suresi YOKTUR, sadece
-        adet carpimi yapilir -- lisans bedeli zaten tam/yillik bedeldir.
-      - "Yillik" / "Aylik" -> HER ZAMAN sure bazli (True).
-      - Alan BOS/tanimsizsa (eski kayitlar) -> geriye donuk uyumluluk:
-        AI'nin gonderdigi sure_bazli varsa onu, yoksa SRV- onekini kullan.
+    'Aylik' periyot hala desteklenir (standart fiyat zaten aylik demektir,
+    12'ye bolunmez); 'Yillik' ve diger her sey yillik kabul edilir.
 
-    Donus: (hizmet_mi_hesap: bool, periyot: str|None)
+    Donus: (hizmet_mi_hesap: bool, periyot: str)
+      hizmet_mi_hesap HER ZAMAN True doner; periyot bilgi amacli gecer.
     """
     try:
         periyot = frappe.db.get_value("Item", urun_kodu, "custom_fiyat_periyodu")
     except Exception:
         periyot = None
 
-    if periyot == "Tek Seferlik (Adet/Lisans)":
-        return False, periyot
-    if periyot in ("Yillik", "Aylik"):
-        return True, periyot
-
-    if ai_sure_bazli is not None:
-        return bool(ai_sure_bazli), periyot
-    return urun_kodu.startswith("SRV-"), periyot
+    # Aylik ise periyot'u koru (12'ye bolunmemesi icin), diger tum durumlarda
+    # (Yillik / Tek Seferlik / bos) sure bazli + yillik oranlama uygulanir.
+    if periyot == "Aylik":
+        return True, "Aylik"
+    return True, "Yillik"
 
 
 def _normalize_tr(s):
@@ -1498,22 +1491,12 @@ def _system_prompt(context=None):
         "TEKLIF/FATURA:\n"
         "- 'fiyat oner', 'teklif' -> HER ZAMAN teklif_taslagi (ayri bir "
         "'sadece fiyat soyle' modu YOK). 'fatura' -> fatura_taslagi.\n"
-        "- HESAP MODU (sure mu adet mi) ARTIK urunun KENDI 'Fiyat Periyodu' "
-        "alanindan belirlenir, kullanicinin sozunden DEGIL:\n"
-        "  * 'Tek Seferlik (Adet/Lisans)' urunlerde SURE KAVRAMI YOKTUR, "
-        "miktar HER ZAMAN ADETTIR. Kullanici '6 aylik' gibi bir SURE ifadesi "
-        "kullanirsa, o sayiyi SESSIZCE adet SANMA -- bu urun sureye degil "
-        "adet/lisans bazli satiliyor, once 'Bu urun sure degil adet/lisans "
-        "bazli satiliyor, kac adet/lisans istersiniz?' diye SOR. Adet "
-        "belirtilmis ama sure kelimesi gecmiyorsa (orn. '50 lisans') dogrudan "
-        "o sayiyi adet olarak kullan.\n"
-        "  * 'Yillik'/'Aylik' urunlerde miktar = AY SAYISIDIR, sureye orantili "
-        "hesaplanir. Sure belirtilmediyse 'Kac aylik/yillik istersiniz?' "
-        "diye ONCE SOR, tahmin etme.\n"
-        "  * sure_bazli parametresini yine de gonderin (tahmininiz) -- ama "
-        "urunun periyodu tanimliysa kod sizin tahmininizi GORMEZDEN GELIR "
-        "ve dogru modu kendi uygular; miktar sayisi DOGRU anlamda (adet ya "
-        "da ay) gonderildigi surece sonuc dogru cikar.\n"
+        "- TUM urunler/lisanslar YILLIK/SURELI satilir. miktar = AY SAYISIDIR "
+        "('6 aylik' -> 6, '1 yillik' -> 12, '2 yillik' -> 24). Yillik fiyattan "
+        "sureye oranli hesaplanir; kod bunu kendi yapar.\n"
+        "- SURE BELIRTILMEMISSE tahmin etme, ONCE SOR: 'Kac aylik/yillik bir "
+        "teklif istersiniz?'. Sure netlesince dogrudan teklif_taslagi'ni cagir "
+        "(sure_bazli=true, miktar=ay sayisi).\n"
         "- TEKLIF'te (teklif_taslagi) KDV/tevkifat HICBIR ZAMAN SORULMAZ, "
         "bu konu teklifle ilgisizdir -- direkt arac cagrilir.\n"
         "- SADECE fatura_taslagi'ndan ONCE sor: KDV dahil mi? Tevkifat var mi? "
